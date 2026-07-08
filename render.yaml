@@ -1,0 +1,29 @@
+# Render-Blueprint fürs Wichtel-Max-Backend.
+# Auf render.com: "New +" -> "Blueprint" -> dieses Repo wählen. Render liest
+# diese Datei, legt den Web-Service an und setzt die Umgebungsvariablen.
+#
+# Kostenlos ("Free"-Instanz) reicht. Achtung: Free-Instanzen schlafen nach
+# ~15 min Inaktivität ein und brauchen beim nächsten Aufruf ein paar Sekunden
+# zum Aufwachen – für den Wichtel unkritisch (er pollt eh nur alle 30 min).
+services:
+  - type: web
+    name: wichtel-max-backend
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/state
+    envVars:
+      - key: ENABLE_MQTT      # in der Cloud keinen MQTT-Broker (nur HTTP)
+        value: "0"
+      - key: STATE_DIR        # dauerhafte Daten auf die Disk (siehe unten)
+        value: /data
+      - key: DEVICE_ID
+        value: max
+    # Persistente Disk, damit Nachrichten/Aufgaben einen Neustart überleben.
+    # (Ohne Disk gehen sie bei jedem Deploy/Neustart verloren.)
+    disk:
+      name: wichtel-data
+      mountPath: /data
+      sizeGB: 1

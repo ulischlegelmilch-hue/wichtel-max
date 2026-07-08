@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wichtel Max – Display-Simulator (CrowPanel 4.2" E-Paper)</title>
+<style>
+  :root { --green:#1f7a3d; --line:#2c4733; --card:#15281b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:#0e1a12; color:#eaf3ec;
+         display:flex; flex-wrap:wrap; gap:28px; padding:28px; align-items:flex-start; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:#9fc4ab; font-size:13px; margin-bottom:16px; max-width:380px; }
+  /* Geräte-Mockup */
+  .device { background:#111; border:6px solid #000; border-radius:18px; padding:14px;
+            box-shadow:0 10px 30px #0008, inset 0 0 0 2px #333;
+            width:fit-content; margin:0 auto; }   /* Rahmen umschließt das Display eng */
+  canvas { display:block; border-radius:4px; }
+  .dims { text-align:center; color:#6f8c79; font-size:12px; margin-top:8px; }
+  .verdict { max-width:320px; margin:10px auto 0; text-align:center; font-size:13px;
+             color:#cfe6d6; line-height:1.4; }
+  .verdict b { color:#eaf3ec; }
+  /* Bedienfeld */
+  .panel { width:380px; max-width:100%; }
+  .panel .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:14px; }
+  label { display:block; font-size:12px; color:#9fc4ab; margin:8px 0 4px; }
+  textarea, input { width:100%; background:#0f1d14; color:#eaf3ec; border:1px solid var(--line);
+                    border-radius:8px; padding:10px; font-size:15px; font-family:inherit; }
+  textarea { min-height:70px; resize:vertical; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  button { background:var(--green); color:#fff; border:none; border-radius:8px; padding:9px 13px;
+           font-size:14px; cursor:pointer; }
+  button.ghost { background:#0f1d14; border:1px solid var(--line); color:#cfe6d6; }
+  button.on { outline:2px solid #2ecc71; }
+  .toggle { display:flex; align-items:center; gap:8px; font-size:13px; color:#cfe6d6; margin-top:6px; }
+  .status { display:flex; align-items:center; gap:8px; font-size:13px; margin-top:8px; color:#9fc4ab; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#777; }
+  .dot.on { background:#2ecc71; box-shadow:0 0 7px #2ecc71; }
+  input[type=range] { padding:0; accent-color:var(--green); }
+  .hint { font-size:11px; color:#7fa389; margin-top:6px; line-height:1.45; }
+  /* Kalibrier-Karte: exakt Kreditkartenbreite 85,6 mm */
+  .calib { margin-top:10px; }
+  .card-ref { width:85.6mm; height:6mm; border:1px dashed #5a7a64; border-radius:3px;
+              display:flex; align-items:center; justify-content:center; color:#9fc4ab; font-size:11px; }
+</style>
+</head>
+<body>
+  <div>
+    <div class="device"><canvas id="screen"></canvas></div>
+    <div class="dims" id="dims"></div>
+    <div class="verdict" id="verdict"></div>
+  </div>
+
+  <div class="panel">
+    <h1>🖥️ Display-Simulator – echte Größe</h1>
+    <div class="sub">Zeigt den Wichtel-Text so groß, wie er <b>wirklich</b> auf dem
+      CrowPanel 4.2" E-Paper erscheint (aktive Fläche 84,8 × 63,6&nbsp;mm, 400×300, 0,212&nbsp;mm/Pixel).
+      Schwarz auf Weiß wie echtes E-Paper – gleicher Wort-Umbruch &amp; zentriert wie die Firmware.
+      <b>Hinweis:</b> kein Hintergrundlicht (im Dunkeln nicht lesbar), Nachricht erscheint
+      beim nächsten Aufwachen (Standard alle 15&nbsp;min oder per Tastendruck).</div>
+
+    <div class="card">
+      <label for="text">Nachricht</label>
+      <textarea id="text" placeholder="Leer lassen = „Warte auf Post“-Bildschirm">Hallo Max! Heute hab ich Plätzchen für dich versteckt. Süße Grüße!</textarea>
+      <label for="from">Absender</label>
+      <input id="from" value="Wichtel" />
+      <div class="row" style="margin-top:10px">
+        <button id="render">Anzeigen</button>
+        <button class="ghost" id="idle">Idle-Screen</button>
+        <button class="ghost" id="rotate">Drehen ⟳</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Darstellung</label>
+      <div class="row">
+        <button class="ghost on" id="realBtn">Echte Größe (1:1)</button>
+        <button class="ghost" id="zoomBtn">2× vergrößert</button>
+      </div>
+      <div class="toggle" style="margin-top:12px"><input type="checkbox" id="auto" checked /> <label for="auto" style="margin:0">Auto-Größe – Schrift füllt das Display (empfohlen)</label></div>
+      <label for="fontpx" style="margin-top:10px">Schriftgröße: <span id="fontmm"></span></label>
+      <input type="range" id="fontpx" min="14" max="52" value="40" style="width:100%" />
+      <div class="hint" id="fontnote"></div>
+    </div>
+
+    <div class="card calib">
+      <label>Monitor kalibrieren (für „echte Größe“)</label>
+      <div class="card-ref">⟵ sollte genau 85,6 mm breit sein (EC-/Kreditkarte) ⟶</div>
+      <div class="hint">Halte eine Bankkarte an den Balken. Passt er exakt, stimmt auch die
+        Displaygröße oben. Weicht es ab, ist dein Monitor anders skaliert – dann gilt der
+        mm-Wert relativ, aber das Größenverhältnis stimmt trotzdem.</div>
+    </div>
+
+    <div class="card">
+      <div class="toggle"><input type="checkbox" id="live" /> <label for="live" style="margin:0">Live mit Backend (zeigt die echte zuletzt gesendete Nachricht)</label></div>
+      <label for="api">Backend-URL</label>
+      <input id="api" value="http://localhost:8080" />
+      <div class="status"><span class="dot" id="dot"></span><span id="statusText">Live aus</span></div>
+    </div>
+  </div>
+
+<script>
+// --- Geräte-Eckdaten ---
+const PITCH_MM = 0.212;     // mm/Pixel: aktive Fläche 84,8×63,6 mm / 400×300 (CrowPanel 4.2")
+const SS = 3;               // internes Supersampling für scharfe Darstellung
+let landscape = true;       // true = Querformat 400×300 – wie Firmware
+let realSize = true;        // 1:1 echte Größe vs. 2× Zoom
+let fontPx = 36;            // Schrifthöhe in Display-Pixeln (FreeSansBold18 ≈ 36)
+
+// Layout: enge Ränder/Zeilen, damit der Text das Display gut füllt.
+const L = { margin:8, lineFact:1.08, senderPx:17, senderGap:8 };
+
+const cv = document.getElementById("screen");
+const ctx = cv.getContext("2d");
+
+function dims() { return landscape ? { w:400, h:300 } : { w:300, h:400 }; }
+
+function setupCanvas() {
+  const { w, h } = dims();
+  cv.width = w * SS; cv.height = h * SS;
+  if (realSize) {
+    // CSS-Breite/Höhe in echten mm → 1:1 auf einem korrekt skalierten Monitor
+    cv.style.width  = (w * PITCH_MM) + "mm";
+    cv.style.height = (h * PITCH_MM) + "mm";
+  } else {
+    cv.style.width  = (w * 2) + "px";
+    cv.style.height = (h * 2) + "px";
+  }
+  document.getElementById("dims").textContent =
+    `${w} × ${h} px  ·  ${(w*PITCH_MM).toFixed(1)} × ${(h*PITCH_MM).toFixed(1)} mm`;
+}
+
+// Buchstaben-Großhöhe (Versalhöhe) ≈ 0,7 × Schriftgröße
+function capMM() { return (fontPx * 0.70 * PITCH_MM); }
+
+function updateFontLabel() {
+  const mm = capMM().toFixed(1);
+  document.getElementById("fontmm").textContent = `${fontPx}px ≈ ${mm} mm Buchstabenhöhe`;
+  let note;
+  if (fontPx <= 20)      note = "kleinste Stufe (FreeSansBold12pt) – nur bei sehr langen Texten.";
+  else if (fontPx <= 38) note = "mittlere Stufe (FreeSansBold18pt) – mit echten Umlauten ä ö ü.";
+  else                   note = "größte Stufe (FreeSansBold24pt) – auf dem E-Paper schön groß & scharf.";
+  document.getElementById("fontnote").textContent = note;
+}
+
+function fontSpec(px, bold) { return (bold ? "bold " : "") + px + "px Arial"; }
+
+function drawIdle() {
+  const { w, h } = dims();
+  ctx.setTransform(SS, 0, 0, SS, 0, 0);
+  ctx.fillStyle = "#f2f1ea"; ctx.fillRect(0, 0, w, h);   // E-Paper-Weiß
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#111"; ctx.font = fontSpec(fontPx, true);
+  ctx.fillText("Wichtel Max", w / 2, h / 2 - fontPx*0.7);
+  ctx.fillStyle = "#555"; ctx.font = fontSpec(15, false);
+  ctx.fillText("warte auf Post ...", w / 2, h / 2 + fontPx*0.7);
+  setVerdict(0);
+}
+
+function wrap(text, maxW) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = []; let cur = "";
+  for (const word of words) {
+    const test = cur ? cur + " " + word : word;
+    if (ctx.measureText(test).width > maxW && cur) { lines.push(cur); cur = word; }
+    else cur = test;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function drawMessage(text, from) {
+  const { w, h } = dims();
+  ctx.setTransform(SS, 0, 0, SS, 0, 0);
+  ctx.fillStyle = "#f2f1ea"; ctx.fillRect(0, 0, w, h);   // E-Paper-Weiß
+  // Manuelle Zentrierung (wie die Firmware), unabhängig von textAlign.
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+
+  const maxW = w - 2 * L.margin;
+  ctx.font = fontSpec(fontPx, true);
+  const lineH = Math.round(fontPx * L.lineFact);
+  const lines = wrap(text, maxW);
+
+  // echte sichtbare Buchstabenhöhe messen (für exakte vertikale Mitte)
+  const pm = ctx.measureText("MgÄ");
+  const ascent  = pm.actualBoundingBoxAscent;
+  const descent = pm.actualBoundingBoxDescent;
+  const senderVis = from ? (L.senderGap + L.senderPx) : 0;
+  const visH = ascent + (lines.length - 1) * lineH + descent + senderVis;
+
+  let baseY = Math.round((h - visH) / 2) + ascent;   // Grundlinie der ersten Zeile
+  if (baseY < ascent + L.margin) baseY = ascent + L.margin;
+
+  ctx.fillStyle = "#111";
+  for (const ln of lines) {
+    const lw = ctx.measureText(ln).width;
+    ctx.fillText(ln, Math.round((w - lw) / 2), baseY);   // jede Zeile selbst zentriert
+    baseY += lineH;
+  }
+  if (from) {
+    ctx.font = fontSpec(L.senderPx, false); ctx.fillStyle = "#444";
+    const s = "– " + from, sw = ctx.measureText(s).width;
+    ctx.fillText(s, Math.round((w - sw) / 2), baseY - descent + L.senderGap);
+  }
+  // grobe Schätzung Zeichen/Zeile
+  ctx.font = fontSpec(fontPx, true);
+  const cw = ctx.measureText("Wichtelmax").width / 10;
+  setVerdict(Math.floor(maxW / cw));
+}
+
+function setVerdict(charsPerLine) {
+  const mm = capMM();
+  // Bei welchem Abstand sind die Buchstaben noch gut lesbar?
+  // Faustregel: Versalhöhe sollte ~20 Bogenminuten haben → Abstand[m] ≈ Höhe[mm] / 5,8
+  const comfM = (mm / 5.8).toFixed(2);
+  let level, col;
+  if (mm >= 4.0)      { level = "groß – auch für Leseanfänger gut"; col = "#7ee0a0"; }
+  else if (mm >= 3.0) { level = "mittel – für Kinder, die schon etwas lesen, ok"; col = "#cfe6d6"; }
+  else if (mm >= 2.2) { level = "klein (wie Zeitungstext) – nur für sichere Leser"; col = "#e6d28a"; }
+  else                { level = "sehr klein – schwer für Kinder"; col = "#e69a8a"; }
+  const cl = charsPerLine ? `· ~${charsPerLine} Zeichen/Zeile` : "";
+  document.getElementById("verdict").innerHTML =
+    `Buchstaben <b style="color:${col}">${mm.toFixed(1)} mm</b> hoch &nbsp;${cl}<br>` +
+    `<span style="color:${col}">${level}</span><br>` +
+    `<span style="font-size:11px;color:#9fc4ab">gut lesbar bis ca. ${comfM} m Abstand</span>`;
+}
+
+// Prüft, ob der Text bei Schriftgröße px komplett aufs Display passt.
+function fitsAt(px, text, from) {
+  const { w, h } = dims();
+  const maxW = w - 2 * L.margin;
+  ctx.font = fontSpec(px, true);
+  // einzelnes zu langes Wort? passt nicht
+  for (const word of text.split(/\s+/)) if (ctx.measureText(word).width > maxW) return false;
+  const lines = wrap(text, maxW);
+  const lineH = Math.round(px * L.lineFact);
+  const totalH = lines.length * lineH + (from ? L.senderGap + L.senderPx : 0);
+  return totalH <= h - 2 * L.margin;
+}
+
+// Größte Schrift suchen, die noch komplett passt (füllt das Display optimal).
+function autoFontPx(text, from) {
+  // Obergrenze ~48px ≈ größte Geräteschrift (FreeSansBold24pt, ~7 mm)
+  for (let px = 48; px >= 14; px--) if (fitsAt(px, text, from)) return px;
+  return 14;
+}
+
+function render() {
+  setupCanvas();
+  const text = document.getElementById("text").value.trim();
+  const from = document.getElementById("from").value.trim();
+  const auto = document.getElementById("auto").checked;
+  document.getElementById("fontpx").disabled = auto;
+  if (auto && text) fontPx = autoFontPx(text, from);
+  else if (auto) fontPx = 36;
+  else fontPx = +document.getElementById("fontpx").value;
+  document.getElementById("fontpx").value = Math.min(52, Math.max(14, fontPx));
+  updateFontLabel();
+  if (text) drawMessage(text, from); else drawIdle();
+}
+
+document.getElementById("render").onclick = render;
+document.getElementById("idle").onclick = () => { document.getElementById("text").value = ""; render(); };
+document.getElementById("rotate").onclick = () => { landscape = !landscape; render(); };
+document.getElementById("fontpx").oninput = (e) => { document.getElementById("auto").checked = false; fontPx = +e.target.value; render(); };
+document.getElementById("auto").onchange = render;
+
+const realBtn = document.getElementById("realBtn"), zoomBtn = document.getElementById("zoomBtn");
+realBtn.onclick = () => { realSize = true;  realBtn.classList.add("on"); zoomBtn.classList.remove("on"); render(); };
+zoomBtn.onclick = () => { realSize = false; zoomBtn.classList.add("on"); realBtn.classList.remove("on"); render(); };
+
+["text","from"].forEach(id => document.getElementById(id).addEventListener("input", () => { if(!liveOn) render(); }));
+
+// --- Live-Modus: echte Nachricht aus dem Backend ---
+let liveOn = false, liveTimer = null;
+async function poll() {
+  const base = document.getElementById("api").value.replace(/\/$/, "");
+  try {
+    const s = await (await fetch(base + "/api/state")).json();
+    document.getElementById("dot").className = "dot" + (s.deviceOnline ? " on" : "");
+    document.getElementById("statusText").textContent = s.deviceOnline ? "Gerät online" : "Live an – Gerät offline";
+    if (s.last) { document.getElementById("text").value = s.last.text; document.getElementById("from").value = s.last.from || ""; }
+    else document.getElementById("text").value = "";
+    render();
+  } catch {
+    document.getElementById("statusText").textContent = "Backend nicht erreichbar";
+    document.getElementById("dot").className = "dot";
+  }
+}
+document.getElementById("live").onchange = (e) => {
+  liveOn = e.target.checked;
+  if (liveOn) { poll(); liveTimer = setInterval(poll, 2000); }
+  else { clearInterval(liveTimer); document.getElementById("statusText").textContent = "Live aus"; }
+};
+
+render();
+</script>
+</body>
+</html>

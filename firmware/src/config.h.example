@@ -1,0 +1,39 @@
+// Diese Datei nach "config.h" kopieren und ausfüllen. config.h ist in .gitignore.
+#pragma once
+
+// ---- WLAN (nur Vorgabe/Fallback) ----
+// Diese Daten sind nur der FALLBACK. Das WLAN kann auch ohne PC am Gerät
+// eingerichtet werden: Findet der Wichtel kein bekanntes WLAN, öffnet er ein
+// eigenes WLAN „Wichtel-Setup" mit einer Konfig-Seite (die dort gespeicherten
+// Daten haben Vorrang vor diesen hier). Wenn du das Ziel-WLAN nicht kennst,
+// lass die Vorgaben einfach stehen und richte es später am Gerät ein.
+#define WIFI_SSID     "DEIN_WLAN"
+#define WIFI_PASS     "DEIN_WLAN_PASSWORT"
+
+// ---- Backend-Adresse ----
+// Das Gerät spricht das Backend NUR über HTTP(S) an (Nachrichten, Aufgaben,
+// Online-Status per Heartbeat, OTA, Fernsteuerung).
+//
+// A) LOKAL (Backend auf dem PC/Server im selben WLAN):
+//      BACKEND_HOST = IP des Rechners, BACKEND_TLS = 0, BACKEND_PORT = 8080
+// B) CLOUD (Backend bei Render/Railway, von überall erreichbar):
+//      BACKEND_HOST = "wichtel-max.onrender.com", BACKEND_TLS = 1, BACKEND_PORT = 443
+#define BACKEND_HOST  "192.168.1.50"   // IP des Backend-Rechners ODER Cloud-Domain (ohne https://)
+#define BACKEND_TLS   0                // 0 = http (lokal), 1 = https (Cloud)
+#define BACKEND_PORT  8080             // lokal 8080; Cloud 443
+
+// ---- MQTT (nur noch optional, für die alte MQTT-Firmware) ----
+// Wird nur verwendet, wenn in main.cpp USE_MQTT_STATUS 1 gesetzt ist. Sonst egal.
+#define MQTT_HOST     BACKEND_HOST     // Broker-Host (falls MQTT genutzt wird)
+#define MQTT_PORT     1883
+#define MQTT_USER     ""
+#define MQTT_PASS     ""
+
+// ---- Gerät ----
+#define DEVICE_ID     "max"            // ergibt Topics wichtel/max/...
+
+// ---- Signalton (optional) ----
+// Kleiner passiver Piezo-Buzzer an einem freien GPIO + GND für einen Piep bei
+// neuer Nachricht/Aufgabe. -1 = kein Buzzer (kein Ton). Beispiel: 21.
+// (Der verbaute ES8311-Lautsprecher wird hierüber NICHT angesteuert.)
+#define BUZZER_PIN    -1

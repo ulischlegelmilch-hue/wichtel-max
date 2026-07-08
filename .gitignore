@@ -1,0 +1,20 @@
+node_modules/
+backend/state.json
+backend/.env
+.env
+firmware/.pio/
+firmware/src/config.h
+.vscode/
+.DS_Store
+backend/firmware/firmware.bin
+
+# --- Flutter/Dart Build-Müll (app/) – NICHT hochladen (mehrere hundert MB) ---
+app/build/
+**/.dart_tool/
+app/.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+
+# --- IDE ---
+.idea/
+*.iml

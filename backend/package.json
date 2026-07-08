@@ -1,0 +1,18 @@
+{
+  "name": "wichtel-max-backend",
+  "version": "0.1.0",
+  "description": "MQTT-Broker + REST-API + Web-App für den Wichtel-Boten",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "aedes": "^0.51.3",
+    "express": "^4.21.2",
+    "mqtt": "^5.10.1"
+  }
+}
