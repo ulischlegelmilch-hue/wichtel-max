@@ -2,9 +2,14 @@
 # Auf render.com: "New +" -> "Blueprint" -> dieses Repo wählen. Render liest
 # diese Datei, legt den Web-Service an und setzt die Umgebungsvariablen.
 #
-# Kostenlos ("Free"-Instanz) reicht. Achtung: Free-Instanzen schlafen nach
-# ~15 min Inaktivität ein und brauchen beim nächsten Aufruf ein paar Sekunden
-# zum Aufwachen – für den Wichtel unkritisch (er pollt eh nur alle 30 min).
+# Kostenlos ("Free"-Instanz) reicht zum Loslegen. Zwei Eigenheiten der Free-Stufe:
+#  1. Schläft nach ~15 min Inaktivität ein, braucht dann ein paar Sekunden zum
+#     Aufwachen – für den Wichtel unkritisch (er pollt eh nur alle 30 min).
+#  2. KEINE persistente Disk (nur in bezahlten Plänen). Deshalb liegt state.json
+#     im (flüchtigen) Container: Nachrichten kommen live an, aber Verlauf/Aufgaben
+#     können bei einem Neustart/Deploy zurückgesetzt werden. Für dauerhaften
+#     Speicher später auf einen bezahlten Plan (ab ~7 $/Monat) wechseln und dann
+#     eine Disk + STATE_DIR=/data ergaenzen (siehe backend/.env.example).
 services:
   - type: web
     name: wichtel-max-backend
@@ -17,13 +22,5 @@ services:
     envVars:
       - key: ENABLE_MQTT      # in der Cloud keinen MQTT-Broker (nur HTTP)
         value: "0"
-      - key: STATE_DIR        # dauerhafte Daten auf die Disk (siehe unten)
-        value: /data
       - key: DEVICE_ID
         value: max
-    # Persistente Disk, damit Nachrichten/Aufgaben einen Neustart überleben.
-    # (Ohne Disk gehen sie bei jedem Deploy/Neustart verloren.)
-    disk:
-      name: wichtel-data
-      mountPath: /data
-      sizeGB: 1
