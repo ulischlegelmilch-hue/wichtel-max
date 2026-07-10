@@ -325,6 +325,19 @@ app.post("/api/message/delete", (req, res) => {
   res.json({ ok: deleteMessage(ts) });
 });
 
+// Alles aufräumen: Nachrichten, Aufgaben, Antworten und Sterne löschen.
+// Gerätestatus/Config/Fern-Log bleiben erhalten. Praktisch zum Zurücksetzen.
+app.post("/api/reset", (_req, res) => {
+  state.history = [];
+  state.last = null;
+  state.tasks = [];
+  state.stars = 0;
+  state.replies = [];
+  if (client) client.publish(T_MESSAGE, "", { qos: 1, retain: true });  // retained Nachricht leeren
+  saveState();
+  res.json({ ok: true });
+});
+
 app.post("/api/cmd", (req, res) => {
   const action = (req.body?.action || "").toString();
   if (!action) return res.status(400).json({ error: "action fehlt" });

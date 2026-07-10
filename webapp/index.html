@@ -110,6 +110,8 @@
       <b>📜 Verlauf</b>
       <div class="sub" style="text-align:left;margin:4px 0 10px">Alle gesendeten Nachrichten – Max kann sie auch am Gerät durchblättern.</div>
       <div id="history"></div>
+      <button class="send" id="resetAll" style="background:var(--red);margin-top:16px">🗑️ Alles löschen</button>
+      <div class="sub" style="text-align:left;margin-top:6px">Entfernt Nachrichten, Aufgaben, Antworten und Sterne – unwiderruflich.</div>
     </div>
 
     <div class="card">
@@ -390,9 +392,17 @@ async function send() {
   else toast("Fehler beim Senden");
 }
 
+async function resetAll() {
+  if (!confirm("Wirklich ALLES löschen? Nachrichten, Aufgaben, Antworten und Sterne werden unwiderruflich entfernt.")) return;
+  const r = await fetch("/api/reset", { method: "POST" });
+  if (r.ok) { toast("🗑️ Alles gelöscht"); refresh(); }
+  else toast("Fehler beim Zurücksetzen");
+}
+
 renderPresets();
 renderCmdPresets();
 $("send").onclick = send;
+$("resetAll").onclick = resetAll;
 $("addTask").onclick = createTask;
 $("taskText").addEventListener("keydown", e => { if (e.key === "Enter") createTask(); });
 $("cmdSend").onclick = sendCmd;
