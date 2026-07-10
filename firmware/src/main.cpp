@@ -21,6 +21,7 @@
 #include <HTTPUpdate.h>   // OTA: Firmware per WLAN vom Backend nachladen
 #include <WebServer.h>    // WLAN-Einrichtung: eigener Webserver im AP-Modus
 #include <DNSServer.h>    // WLAN-Einrichtung: Captive Portal
+#include <qrcode.h>       // QR-Code fürs Einrichtungsportal (ricmoo/QRCode)
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -44,14 +45,19 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      1
+#define FW_VERSION      8
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
 #define WIFI_TIMEOUT    8000  // ms pro WLAN-Versuch warten
 #define WIFI_TRIES      2     // Anzahl Verbindungsversuche, bevor aufgegeben wird
+#define WIFI_MAX        5     // so viele bekannte WLANs merkt sich das Gerät
 #define BOOT_DIAG       0     // Boot-Diagnose (Tasten + I2C/Touch-Scan) ueber Serial; 1=an zum Debuggen
-#define HTTP_TIMEOUT    5000  // ms auf die Backend-Antwort warten
+#define HTTP_TIMEOUT    20000 // ms auf die Backend-Antwort warten. Hoch, weil ein
+                              // schlafender Gratis-Cloud-Server (Render free) beim
+                              // ersten Aufruf ~15-30 s zum Aufwachen braucht. Ist der
+                              // Server wach (z. B. per Keep-Alive-Pinger), antwortet er
+                              // in <2 s – der hohe Wert kostet dann NICHTS (nur Obergrenze).
 #define IDLE_SLEEP_MS   180000 // ms ohne Tastendruck -> automatisch schlafen (3 Minuten)
 #define LONGPRESS_MS    1500  // ms PWR halten = weglegen/schlafen (jeder Knopf weckt wieder)
 #define ARCHIVE_MAX     15    // so viele Nachrichten am Gerät durchblätterbar
@@ -97,6 +103,7 @@
 WiFiClient net;
 PubSubClient mqtt(net);
 Preferences prefs;
+bool gOnline = false;              // hatte das Gerät in dieser Wach-Phase WLAN? (für Anzeige)
 
 String topicStatus = String("wichtel/") + DEVICE_ID + "/status";
 
@@ -594,37 +601,103 @@ void saveConfigNVS() {
   prefs.end();
 }
 
-// ---- WLAN verbinden: gespeicherte Zugangsdaten (NVS) haben Vorrang vor der
-//      fest einkompilierten config.h. -------------------------------------
-// Sind WLAN-Zugangsdaten gespeichert? (Steuert, ob bei Verbindungsfehler das
-// Einrichtungs-Portal starten darf oder nicht.)
-bool hasStoredWiFi() {
+// ---- WLAN verbinden: das Gerät merkt sich MEHRERE Netze (zuletzt erfolgreiches
+//      zuerst) und verbindet sich mit dem stärksten bekannten, das gerade in
+//      Reichweite ist. Gespeicherte Netze (NVS) haben Vorrang vor der fest
+//      einkompilierten config.h. --------------------------------------------
+// NVS-Namespace "wifi": "n" = Anzahl, "s0".."s{n-1}" / "p0".."p{n-1}" = SSID/Pass.
+// Altes Einzelformat ("ssid"/"pass") wird beim ersten Lesen migriert.
+int loadWifiList(String *ssids, String *passes) {
   prefs.begin("wifi", true);
-  String s = prefs.getString("ssid", "");
+  int n = prefs.getInt("n", -1);
+  if (n < 0) {                                   // evtl. noch altes Einzelformat
+    String s = prefs.getString("ssid", "");
+    String p = prefs.getString("pass", "");
+    prefs.end();
+    if (s.length()) { ssids[0] = s; passes[0] = p; return 1; }
+    return 0;
+  }
+  if (n > WIFI_MAX) n = WIFI_MAX;
+  for (int i = 0; i < n; i++) {
+    ssids[i]  = prefs.getString((String("s") + i).c_str(), "");
+    passes[i] = prefs.getString((String("p") + i).c_str(), "");
+  }
   prefs.end();
-  return s.length() > 0;
+  return n;
+}
+
+// Netz vorne einsortieren (zuletzt erfolgreich = zuerst probiert), Duplikate raus,
+// Passwort aktualisieren, auf WIFI_MAX begrenzen. Schreibt NICHT, wenn schon vorn.
+void addWifiCred(const String &ssid, const String &pass) {
+  if (!ssid.length()) return;
+  String ss[WIFI_MAX + 1], pp[WIFI_MAX + 1];
+  int n = loadWifiList(ss, pp);
+  if (n > 0 && ss[0] == ssid && pp[0] == pass) return;   // schon vorn -> kein Flash-Schreiben
+  int w = 0;                                     // gleiches Netz vorher rauswerfen
+  for (int i = 0; i < n; i++) { if (ss[i] == ssid) continue; ss[w] = ss[i]; pp[w] = pp[i]; w++; }
+  n = w;
+  for (int i = n; i > 0; i--) { ss[i] = ss[i - 1]; pp[i] = pp[i - 1]; }
+  ss[0] = ssid; pp[0] = pass; n++;
+  if (n > WIFI_MAX) n = WIFI_MAX;
+  prefs.begin("wifi", false);
+  prefs.putInt("n", n);
+  for (int i = 0; i < n; i++) {
+    prefs.putString((String("s") + i).c_str(), ss[i]);
+    prefs.putString((String("p") + i).c_str(), pp[i]);
+  }
+  prefs.remove("ssid"); prefs.remove("pass");    // Migration abschließen
+  prefs.end();
+}
+
+// Sind überhaupt WLAN-Zugangsdaten gespeichert? (Steuert, ob bei Verbindungs-
+// fehler das Einrichtungs-Portal starten darf oder nicht.)
+bool hasStoredWiFi() {
+  String ss[WIFI_MAX], pp[WIFI_MAX];
+  return loadWifiList(ss, pp) > 0;
 }
 
 bool connectWiFi() {
-  String ssid, pass;
-  prefs.begin("wifi", true);
-  ssid = prefs.getString("ssid", "");
-  pass = prefs.getString("pass", "");
-  prefs.end();
-  const char *useSsid = ssid.length() ? ssid.c_str() : WIFI_SSID;   // sonst config.h-Fallback
-  const char *usePass = ssid.length() ? pass.c_str() : WIFI_PASS;
+  String ss[WIFI_MAX], pp[WIFI_MAX];
+  int n = loadWifiList(ss, pp);
+  if (n == 0) {                                  // nichts gespeichert -> config.h-Fallback
+    if (strlen(WIFI_SSID) == 0) return false;
+    ss[0] = WIFI_SSID; pp[0] = WIFI_PASS; n = 1;
+  }
 
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);                 // stabilere/schnellere Verbindung
+  WiFi.setSleep(false);                          // stabilere/schnellere Verbindung
+
   // Mehrere Anläufe: ein einzelner flakiger Versuch soll nicht gleich alles kippen.
   for (int attempt = 0; attempt < WIFI_TRIES; attempt++) {
-    WiFi.disconnect(true);
-    delay(50);
-    WiFi.begin(useSsid, usePass);
-    unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT) delay(200);
-    if (WiFi.status() == WL_CONNECTED) return true;
+    int found = WiFi.scanNetworks();             // sichtbare Netze, nach Signal sortiert
+    bool triedAny = false;
+    for (int s = 0; s < found; s++) {            // stärkstes zuerst
+      String vis = WiFi.SSID(s);
+      for (int k = 0; k < n; k++) {
+        if (ss[k] != vis) continue;              // nur bekannte Netze anfassen
+        triedAny = true;
+        WiFi.disconnect(true); delay(50);
+        WiFi.begin(ss[k].c_str(), pp[k].c_str());
+        unsigned long t0 = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT) delay(200);
+        if (WiFi.status() == WL_CONNECTED) {
+          WiFi.scanDelete();
+          addWifiCred(ss[k], pp[k]);             // erfolgreiches Netz nach vorne
+          return true;
+        }
+        break;                                   // dieses Netz erledigt -> nächstes sichtbare
+      }
+    }
+    WiFi.scanDelete();
+    // Kein bekanntes Netz sichtbar (z.B. versteckte SSID) -> ersten blind versuchen.
+    if (!triedAny) {
+      WiFi.disconnect(true); delay(50);
+      WiFi.begin(ss[0].c_str(), pp[0].c_str());
+      unsigned long t0 = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_TIMEOUT) delay(200);
+      if (WiFi.status() == WL_CONNECTED) { addWifiCred(ss[0], pp[0]); return true; }
+    }
   }
   return false;
 }
@@ -939,9 +1012,17 @@ void runReplyMenu() {
   waitButtonsReleased();
   unsigned long lastActive = millis();
   int bootPrev = HIGH, pwrPrev = HIGH;
+  unsigned long bootDown = 0;
   for (;;) {
     int b = digitalRead(BTN_WAKE), p = digitalRead(BTN_POWER);
-    if (bootPrev == HIGH && b == LOW) { sel = (sel + 1) % N; renderReplyOption(sel); lastActive = millis(); }
+    // oberer Knopf: KURZ = nächste Option; LANG (>=1,5 s) = zurück ins Hauptmenü
+    if (bootPrev == HIGH && b == LOW) bootDown = millis();
+    if (b == LOW && bootDown && millis() - bootDown >= LONGPRESS_MS) break;   // lang -> Menü
+    if (bootPrev == LOW && b == HIGH) {                 // losgelassen
+      unsigned long held = millis() - bootDown; bootDown = 0;
+      if (held < LONGPRESS_MS) { sel = (sel + 1) % N; renderReplyOption(sel); }
+      lastActive = millis();
+    }
     if (pwrPrev == HIGH && p == LOW) {
       if (sel >= REPLY_N) break;             // zurück
       showMood(MOOD_WAIT, "sende ...", "");
@@ -1017,21 +1098,27 @@ void runReader() {
   waitButtonsReleased();
   unsigned long lastActive = millis();
   int bootPrev = HIGH;
+  unsigned long bootDown = 0;
 #if HAS_BACK_BUTTON
   int pwrPrev = HIGH;
-#else
-  unsigned long bootDown = 0;
 #endif
 
   for (;;) {
     int b = digitalRead(BTN_WAKE);
 #if HAS_BACK_BUTTON
     int p = digitalRead(BTN_POWER);
-    if (bootPrev == HIGH && b == LOW) {                 // WEITER (am Ende zurück ins Menü)
-      int pm = curMsg, pp = curPage;
-      navNext();
-      if (curMsg == pm && curPage == pp) break;
-      renderCurrent(); lastActive = millis();
+    // oberer Knopf: KURZ = weiter blättern; LANG (>=1,5 s) = sofort zurück ins Hauptmenü
+    if (bootPrev == HIGH && b == LOW) bootDown = millis();
+    if (b == LOW && bootDown && millis() - bootDown >= LONGPRESS_MS) break;   // lang -> Menü
+    if (bootPrev == LOW && b == HIGH) {                 // losgelassen
+      unsigned long held = millis() - bootDown; bootDown = 0;
+      if (held < LONGPRESS_MS) {                        // kurz = WEITER (am Ende zurück ins Menü)
+        int pm = curMsg, pp = curPage;
+        navNext();
+        if (curMsg == pm && curPage == pp) break;
+        renderCurrent();
+      }
+      lastActive = millis();
     }
     if (pwrPrev == HIGH && p == LOW) {                  // LOESCHEN (mit Abfrage)
       if (confirmDelete()) {
@@ -1131,21 +1218,26 @@ void runTasks() {
   waitButtonsReleased();
   unsigned long lastActive = millis();
   int bootPrev = HIGH;
+  unsigned long bootDown = 0;
 #if HAS_BACK_BUTTON
   int pwrPrev = HIGH;
-#else
-  unsigned long bootDown = 0;
 #endif
 
   while (ti < tasksN) {
     int b = digitalRead(BTN_WAKE);
 #if HAS_BACK_BUTTON
     int p = digitalRead(BTN_POWER);
-    // WEITER = nächste Aufgabe ansehen; nach der letzten zurück ins Menü
-    if (bootPrev == HIGH && b == LOW) {
-      ti++;
-      if (ti >= tasksN) break;
-      renderTask(ti, tasksN); lastActive = millis();
+    // oberer Knopf: KURZ = nächste Aufgabe (am Ende zurück ins Menü); LANG = sofort ins Hauptmenü
+    if (bootPrev == HIGH && b == LOW) bootDown = millis();
+    if (b == LOW && bootDown && millis() - bootDown >= LONGPRESS_MS) break;   // lang -> Menü
+    if (bootPrev == LOW && b == HIGH) {                 // losgelassen
+      unsigned long held = millis() - bootDown; bootDown = 0;
+      if (held < LONGPRESS_MS) {                        // kurz = nächste Aufgabe
+        ti++;
+        if (ti >= tasksN) break;
+        renderTask(ti, tasksN);
+      }
+      lastActive = millis();
     }
     // FERTIG = aktuelle Aufgabe erledigen (aus der Liste nehmen, nächste zeigen)
     if (pwrPrev == HIGH && p == LOW) {
@@ -1188,6 +1280,18 @@ void showInfo(const char *msg) {
 // ---- Screensaver (Ruhebild) + Hauptmenü ---------------------------------
 // Ruhebild: Wichtelgesicht + "Hallo Max!" + Info-Kasten (Anzahl neuer Sachen) +
 // Uhrzeit/Akku. Knöpfe: oben MENUE, unten SCHLAF.
+// Kleines WLAN-Symbol (drei Bögen + Punkt) oben rechts. connected=false ->
+// durchgestrichen = "kein WLAN".
+void drawWifiIcon(int cx, int baseY, bool connected) {
+  for (int r = 4; r <= 12; r += 4)
+    display.drawCircleHelper(cx, baseY, r, 0x1 | 0x2, GxEPD_BLACK);  // obere zwei Quadranten = Fächer
+  display.fillCircle(cx, baseY, 1, GxEPD_BLACK);
+  if (!connected) {                              // durchgestrichen = kein Netz
+    display.drawLine(cx - 13, baseY - 15, cx + 13, baseY + 3, GxEPD_BLACK);
+    display.drawLine(cx - 12, baseY - 15, cx + 14, baseY + 3, GxEPD_BLACK);
+  }
+}
+
 void renderScreensaver() {
   const int W = display.width(), H = display.height();
   Mood m = (timeValid && isNightNow()) ? MOOD_SLEEP : MOOD_WAIT;
@@ -1212,6 +1316,7 @@ void renderScreensaver() {
     display.setCursor(ix + 6, iy + 14); display.print(info);
     if (tbuf[0]) { display.setCursor(6, H - 4); display.print(tbuf); }
     if (bpct >= 0) { String pc = String(bpct) + "%"; display.setCursor(W - 26 - textW(pc), H - 4); display.print(pc); }
+    drawWifiIcon(W - 16, 18, gOnline);          // WLAN-Status oben rechts
     drawButtonLabels("MENU", "");
   } while (display.nextPage());
 }
@@ -1220,10 +1325,11 @@ void renderScreensaver() {
 void renderMenu(int sel) {
   const int W = display.width();
   int unread = unreadCount();
-  String items[3] = {
+  String items[4] = {
     unread > 0 ? ("Nachrichten (" + String(unread) + " neu)") : String("Nachrichten"),
     "Aufgaben (" + String(tasksN) + ")",
-    "Antwort"
+    "Antwort",
+    "WLAN einrichten"
   };
   display.setFullWindow(); display.firstPage();
   do {
@@ -1234,12 +1340,12 @@ void renderMenu(int sel) {
       int tx = (W - textW(t)) / 2;
       display.setCursor(tx, 19); display.print(t);
       int ucx = tx + textW(t) - textW("u") / 2; // Mitte des u (vom rechten Rand her)
-      display.fillCircle(ucx - 2, 8, 1, GxEPD_WHITE);
-      display.fillCircle(ucx + 2, 8, 1, GxEPD_WHITE);
+      display.fillCircle(ucx - 3, 4, 1, GxEPD_WHITE);   // Punkte klar ÜBER dem u (y=4)
+      display.fillCircle(ucx + 3, 4, 1, GxEPD_WHITE);
     }
     display.setFont(&FreeSansBold9pt7b);        // kleinere Listenschrift (damit "(2)" nicht abgeschnitten wird)
-    int y0 = 36, rowH = 34;
-    for (int i = 0; i < 3; i++) {
+    int y0 = 34, rowH = 32;
+    for (int i = 0; i < 4; i++) {
       int ry = y0 + i * rowH;
       if (i == sel) { display.fillRect(4, ry, W - 26, 26, GxEPD_BLACK); display.setTextColor(GxEPD_WHITE); }
       else display.setTextColor(GxEPD_BLACK);
@@ -1251,8 +1357,9 @@ void renderMenu(int sel) {
 
 // Menü-Schleife: WEITER schiebt die Markierung, OK öffnet. Kehrt bei Timeout
 // zurück (danach schläft das Gerät automatisch).
+void runWifiSetup();   // weiter unten definiert (WLAN-Einrichtungsportal)
 void runMainMenu() {
-  const int N = 3;
+  const int N = 4;
   int sel = 0;
   epdBegin();
   renderMenu(sel);
@@ -1272,20 +1379,23 @@ void runMainMenu() {
         else { showInfo("Keine Aufgaben"); delay(1200); }
       } else if (sel == 2) {
         epdBegin(); runReplyMenu(); epdEnd();
+      } else if (sel == 3) {
+        runWifiSetup();                               // WLAN-Portal (zeichnet selbst); bei Speichern Neustart
       }
       epdBegin(); renderMenu(sel);                    // zurück im Menü
       waitButtonsReleased(); lastActive = millis();
     }
     bootPrev = b; pwrPrev = p;
-    if (millis() - lastActive > IDLE_SLEEP_MS) { epdEnd(); return; }
+    // Zeitlimit -> aufs freundliche Ruhebild wechseln (nicht auf dem Menü "einfrieren").
+    if (millis() - lastActive > IDLE_SLEEP_MS) { renderScreensaver(); epdEnd(); return; }
     delay(15);
   }
 }
 
 // Screensaver-Schleife: oben öffnet das Menü, unten legt schlafen.
-void runScreensaver() {
+void runScreensaver(bool alreadyDrawn = false) {
   epdBegin();
-  renderScreensaver();
+  if (!alreadyDrawn) renderScreensaver();   // schon gezeichnet (Sofort-Feedback)? -> kein Flackern
   waitButtonsReleased();
   unsigned long lastActive = millis();
   int bootPrev = HIGH, pwrPrev = HIGH;
@@ -1319,20 +1429,43 @@ void notifyBeep(int beeps) {
 // ---- WLAN-Einrichtungs-Modus (Captive Portal) ---------------------------
 #define WIFI_SETUP_TIMEOUT 300000UL   // 5 min ohne Eingabe -> zurück/schlafen
 
-// E-Paper-Anleitung während der Einrichtung.
+// QR-Code mittig um cx zeichnen (oben bei topY). scale = Pixel je Modul.
+// Version 2 = 25x25 Module (Byte-Modus ECC_L bis 32 Zeichen -> reicht für die URL).
+void drawQR(const char *text, int cx, int topY, int scale, int *outDim) {
+  const int version = 2;
+  QRCode qr;
+  uint8_t buf[qrcode_getBufferSize(version)];
+  qrcode_initText(&qr, buf, version, ECC_LOW, text);
+  int dim = qr.size * scale;
+  int x0 = cx - dim / 2;
+  display.fillRect(x0 - 2 * scale, topY - 2 * scale, dim + 4 * scale, dim + 4 * scale, GxEPD_WHITE); // Quiet Zone
+  for (uint8_t y = 0; y < qr.size; y++)
+    for (uint8_t x = 0; x < qr.size; x++)
+      if (qrcode_getModule(&qr, x, y))
+        display.fillRect(x0 + x * scale, topY + y * scale, scale, scale, GxEPD_BLACK);
+  if (outDim) *outDim = dim;
+}
+
+// E-Paper-Anleitung während der Einrichtung: QR-Code der Setup-Adresse, damit
+// man die IP nicht abtippen muss (erst mit „Wichtel-Setup" verbinden, dann scannen).
 void showWifiSetupScreen() {
-  const int W = display.width(); const int maxW = W - 2 * marginPx();
+  const int W = display.width(), H = display.height(); const int maxW = W - 2 * marginPx();
   const GFXfont *hd[] = { &FreeSansBold12pt7b, &FreeSansBold9pt7b };
   const GFXfont *sm[] = { &FreeSans9pt7b };
+  bool small = (H < 300);                       // Waveshare 200x200 vs. CrowPanel 400x300
+  int qscale = small ? 5 : 8;                   // 25 Module * scale (small=125px, gross=200px)
+  int qtop   = small ? 48 : 88;
+  int dim = 0;
   display.setFullWindow(); display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
-    drawCenteredFit("WLAN einrichten", 24, hd, 2, maxW);
-    drawCenteredFit("1) Handy-WLAN:", 58, sm, 1, maxW);
-    drawCenteredFit("Wichtel-Setup", 84, TITLE_FONTS, 3, maxW);
-    drawCenteredFit("2) Seite folgt", 120, sm, 1, maxW);
-    drawCenteredFit("3) Dein WLAN eintragen", 142, sm, 1, maxW);
-    drawCenteredFit("sonst: 192.168.4.1", 170, sm, 1, maxW);
+    drawCenteredFit("WLAN einrichten", small ? 18 : 34, hd, 2, maxW);
+    drawCenteredFit("1) WLAN: Wichtel-Setup", small ? 40 : 70, sm, 1, maxW);
+    drawQR("http://192.168.4.1", W / 2, qtop, qscale, &dim);
+    drawCenteredFit("2) scannen  o.  192.168.4.1", qtop + dim + (small ? 18 : 28), sm, 1, small ? W - 46 : maxW);
+#if HAS_BACK_BUTTON
+    drawButtonLabels("", "ZURUECK");            // unterer Knopf = Abbrechen
+#endif
   } while (display.nextPage());
 }
 
@@ -1372,10 +1505,7 @@ void runWifiSetup() {
     if (!ssid.length()) ssid = web.arg("ssid");
     String pass = web.arg("pass");
     if (ssid.length()) {
-      prefs.begin("wifi", false);
-      prefs.putString("ssid", ssid);
-      prefs.putString("pass", pass);
-      prefs.end();
+      addWifiCred(ssid, pass);        // zur Liste bekannter Netze hinzufügen (nicht überschreiben)
       saved = true;
       web.send(200, "text/html", "<meta charset=utf-8><body style='font-family:sans-serif;background:#0e1a12;color:#eaf3ec;padding:24px'>"
         "<h2 style='color:#7ee0a0'>Gespeichert!</h2><p>Der Wichtel startet neu und verbindet sich mit <b>" + ssid + "</b>.</p></body>");
@@ -1389,8 +1519,17 @@ void runWifiSetup() {
   epdBegin(); showWifiSetupScreen(); epdEnd();
   Serial.print("WLAN-Setup: mit AP 'Wichtel-Setup' verbinden, dann http://"); Serial.println(apIP);
 
+#if HAS_BACK_BUTTON
+  while (digitalRead(BTN_POWER) == LOW) delay(10);   // OK-Druck aus dem Menü erst loslassen
+#endif
   unsigned long t0 = millis();
-  while (!saved && millis() - t0 < WIFI_SETUP_TIMEOUT) { dns.processNextRequest(); web.handleClient(); delay(2); }
+  while (!saved && millis() - t0 < WIFI_SETUP_TIMEOUT) {
+    dns.processNextRequest(); web.handleClient();
+#if HAS_BACK_BUTTON
+    if (digitalRead(BTN_POWER) == LOW) break;         // unterer Knopf = Abbrechen -> zurück ins Menü
+#endif
+    delay(2);
+  }
 
   web.stop(); dns.stop(); WiFi.softAPdisconnect(true);
   if (saved) { delay(1500); ESP.restart(); }
@@ -1741,6 +1880,21 @@ void setup() {
   // Nachtruhe: reines Timer-Aufwachen nachts -> ohne WLAN weiterschlafen.
   if (timerWake && timeValid && isNightNow()) goToSleep();
 
+  // ---- Sofort-Feedback bei Tastendruck ----
+  // WLAN + Cloud-Abruf dauern ~10-20 s. Damit ein KURZER Tastendruck sofort
+  // sichtbar quittiert wird (statt "eingefroren" zu wirken), zeichnen wir gleich
+  // das Ruhebild aus dem Cache. NUR bei interaktivem Aufwachen (Tastendruck/
+  // Kaltstart), nicht beim stillen 30-min-Timer -> dort kein unnötiges Flackern.
+  bool saverDrawn = false; int saverSig = -1;
+#if HAS_BACK_BUTTON
+  if (interactive) {
+    loadArchiveNVS();                        // gecachte Nachrichten fürs Ruhebild
+    epdBegin(); renderScreensaver(); epdEnd();
+    saverDrawn = true;
+    saverSig = unreadCount() * 100 + tasksN + (isNightNow() ? 100000 : 0) + (gOnline ? 1000000 : 0);
+  }
+#endif
+
   // ---- Daten holen (WLAN) oder offline aus NVS laden ----
   bool online = connectWiFi();
   // Einrichtungs-Portal NUR, wenn noch nie WLAN eingerichtet wurde. Sind Daten
@@ -1756,6 +1910,7 @@ void setup() {
     runWifiSetup();                             // speichert -> Neustart; sonst weiter offline
     online = connectWiFi();
   }
+  gOnline = online;                              // für WLAN-Anzeige im Ruhebild
   if (online) {
     httpHeartbeat(true);                         // Online-Status ans Backend (HTTP)
 #if USE_MQTT_STATUS
@@ -1782,7 +1937,10 @@ void setup() {
 #endif
       if (tasksN == 0) { WiFi.disconnect(true); WiFi.mode(WIFI_OFF); }
     }
-    runScreensaver();                              // Ruhebild -> Menü -> ... -> Schlaf
+    // Ruhebild nach dem Abruf nur neu zeichnen, wenn sich der Inhalt geändert hat
+    // (sonst zeigt das Sofort-Feedback von oben schon das richtige Bild -> kein Flackern).
+    int postSig = unreadCount() * 100 + tasksN + (isNightNow() ? 100000 : 0) + (gOnline ? 1000000 : 0);
+    runScreensaver(saverDrawn && postSig == saverSig);   // Ruhebild -> Menü -> ... -> Schlaf
     if (archiveN > 0) { lastShownHash = hashMsg(archive[0].text, archive[0].from); navSig = archive[0].ts; }
     lastTaskSig = taskSig();
   } else {
