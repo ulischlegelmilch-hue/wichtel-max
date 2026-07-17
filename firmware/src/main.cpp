@@ -45,7 +45,7 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      13
+#define FW_VERSION      14
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
@@ -72,8 +72,8 @@
 #define IDLE_SLEEP_MS   180000 // ms ohne Tastendruck -> automatisch schlafen (3 Minuten)
 #define LONGPRESS_MS    1500  // ms PWR halten = weglegen/schlafen (jeder Knopf weckt wieder)
 #define ARCHIVE_MAX     15    // so viele Nachrichten am Gerät durchblätterbar
-#define STORE_TEXT_MAX  2000  // pro Nachricht max. Zeichen im Gerätespeicher (war 800 -> lange Nachrichten wurden gekappt)
-#define MAX_LINES       200   // max. umbrochene Zeilen einer Nachricht (~50 Seiten; war 80 = nur 20 Seiten)
+#define STORE_TEXT_MAX  3000  // pro Nachricht max. Zeichen (Anzeige + Speicher). Grenze durch NVS (~4KB/Eintrag als JSON)
+#define MAX_LINES       500   // max. umbrochene Zeilen einer Nachricht (reicht für ~3000 Zeichen grosse Schrift)
 #define TASK_MAX        10    // so viele offene Aufgaben gleichzeitig
 #define DONE_SHOW_MS    2500  // wie lange das "Erledigt"-Gesicht stehen bleibt
 
@@ -87,6 +87,10 @@
 // GROSSE feste Leseschrift (für Leseanfänger). Umschaltbar: für noch größere
 // Schrift &FreeSansBold24pt7b setzen (dann mehr Seiten pro Geschichte).
 #define READER_FONT (&FreeSansBold18pt7b)
+// Automatische Leseschrift nach Nachrichtenlänge: kurze Nachrichten gross (gut für
+// Max), lange Geschichten kleiner -> viel weniger Seiten. Schwellen in Zeichen.
+#define READER_BIG_MAX  220   // bis hier: grosse Schrift (18pt)
+#define READER_MID_MAX  650   // bis hier: mittlere Schrift (12pt); darueber klein (9pt)
 #define FOOTER_FONT (&FreeSans9pt7b)
 #define FOOTER_H     26    // reservierte Höhe unten (Fußzeile: Absender/Seite/Archiv).
                            // Muss die Fußzeilenschrift PLUS Abstand fassen, sonst streifen
@@ -198,7 +202,7 @@ int curMsg = 0, curPage = 0;
 
 // ---- Textaufbereitung (UTF-8 -> ASCII-Basis + Umlaut-Flags) --------------
 static String gBase;
-static bool   gUm[2048];   // muss >= buildBase-Cap sein (indexiert per gBase.length())
+static bool   gUm[3072];   // muss >= STORE_TEXT_MAX sein (indexiert per gBase.length())
 
 void buildBase(const String &t) {
   gBase = ""; memset(gUm, 0, sizeof(gUm));
@@ -328,11 +332,20 @@ void drawBaseLine(const Range &r, const GFXfont *f, int baselineY, int asc, bool
   if (hy) display.print('-');           // Trennstrich bei hart getrenntem Wort
 }
 
-// Zeilen pro Seite (feste Leseschrift).
+// Leseschrift je nach Nachrichtenlänge wählen (kurze gross, lange klein).
+const GFXfont *gReaderFont = READER_FONT;
+const GFXfont *pickReaderFont(const String &t) {
+  int n = t.length();
+  if (n <= READER_BIG_MAX) return &FreeSansBold18pt7b;   // kurze Nachricht: gross
+  if (n <= READER_MID_MAX) return &FreeSansBold12pt7b;   // mittel
+  return &FreeSansBold9pt7b;                             // lange Geschichte: klein
+}
+
+// Zeilen pro Seite (aktuelle Leseschrift gReaderFont).
 int gAsc, gDesc, gLineH, gLinesPerPage;
 void computeReaderMetrics() {
-  fontAscDesc(READER_FONT, gAsc, gDesc);
-  gLineH = READER_FONT->yAdvance;
+  fontAscDesc(gReaderFont, gAsc, gDesc);
+  gLineH = gReaderFont->yAdvance;
   int M = marginPx();
   int firstBase = M + gAsc;
   int lastBaseMax = display.height() - FOOTER_H - gDesc;
@@ -340,11 +353,14 @@ void computeReaderMetrics() {
   if (gLinesPerPage < 1) gLinesPerPage = 1;
 }
 
-// Seitenzahl einer Nachricht (baut/bricht sie dafür um).
+// Seitenzahl einer Nachricht (baut/bricht sie dafür um). Wählt dieselbe Schrift
+// wie renderCurrent, damit die Seitenzahlen (Fußzeile, Blättern) übereinstimmen.
 int pageCountOf(int idx) {
   if (idx < 0 || idx >= archiveN) return 1;
+  gReaderFont = pickReaderFont(archive[idx].text);
+  computeReaderMetrics();
   buildBase(archive[idx].text);
-  wrapWith(READER_FONT, display.width() - 2 * SIDE_MARGIN);
+  wrapWith(gReaderFont, display.width() - 2 * SIDE_MARGIN);
   int pc = (nLines + gLinesPerPage - 1) / gLinesPerPage;
   return pc < 1 ? 1 : pc;
 }
@@ -560,9 +576,10 @@ void renderTaskAlert(int count) {
 void renderCurrent() {
   const int W = display.width(), H = display.height();
   const int M = marginPx();
+  gReaderFont = pickReaderFont(archive[curMsg].text);   // Schrift nach Länge
   computeReaderMetrics();
   buildBase(archive[curMsg].text);
-  wrapWith(READER_FONT, W - 2 * SIDE_MARGIN);
+  wrapWith(gReaderFont, W - 2 * SIDE_MARGIN);
   int pc = (nLines + gLinesPerPage - 1) / gLinesPerPage; if (pc < 1) pc = 1;
   if (curPage >= pc) curPage = pc - 1;
   if (curPage < 0)   curPage = 0;
@@ -574,7 +591,7 @@ void renderCurrent() {
   do {
     display.fillScreen(GxEPD_WHITE);
     int y = M + gAsc;
-    for (int i = start; i < end; i++) { drawBaseLine(lines[i], READER_FONT, y, gAsc, hyph[i]); y += gLineH; }
+    for (int i = start; i < end; i++) { drawBaseLine(lines[i], gReaderFont, y, gAsc, hyph[i]); y += gLineH; }
     // EINE Fußzeile ganz unten: Absender + Seitenzahl + welche gespeicherte Nachricht.
     // Früher standen Seitenzahl und Archiv-Hinweis OBEN - genau dort beginnt aber die
     // erste Textzeile (Grundlinie M+gAsc), sie überlappten also zwangsläufig. Der
