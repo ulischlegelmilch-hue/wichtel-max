@@ -45,7 +45,7 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      11
+#define FW_VERSION      12
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
@@ -263,21 +263,37 @@ void fontAscDesc(const GFXfont *f, int &asc, int &desc) {
 // Bricht gBase mit Font f in Zeilen um (gefüllt bis nLines). Bevorzugt Umbruch an
 // Leerzeichen; passt ein einzelnes Wort nicht in die Zeile, wird es hart getrennt
 // (hyph[]=true -> beim Zeichnen kommt ein Bindestrich ans Zeilenende).
+// Prüft, ob ein Zeichen ein Absatzumbruch ist. WICHTIG: '\n'/'\r' dürfen NIE in
+// einen gezeichneten Zeilenbereich geraten - Adafruit-GFX macht daraus sonst einen
+// echten Zeilensprung (Cursor auf x=0, y eine Zeile tiefer) und malt den Rest über
+// die nächste Zeile (Ursache der "Ichduwarst"-Überlappung bei mehrzeiligen Texten).
+static inline bool isBreak(char c) { return c == '\n' || c == '\r'; }
+
 void wrapWith(const GFXfont *f, int maxW) {
   display.setFont(f);
   nLines = 0;
   int L = gBase.length(), i = 0;
   while (i < L && nLines < MAX_LINES) {
+    // Absatzumbruch: mehrere \n/\r (und Leerzeichen dazwischen) = genau EINE Leerzeile
+    // (keine führende Leerzeile ganz oben, keine am Textende).
+    if (isBreak(gBase[i])) {
+      int j = i;
+      while (j < L && (isBreak(gBase[j]) || gBase[j] == ' ')) j++;
+      if (nLines > 0 && j < L) { lines[nLines] = { i, i }; hyph[nLines] = false; nLines++; }
+      i = j;
+      continue;
+    }
     while (i < L && gBase[i] == ' ') i++;             // führende Leerzeichen weg
     if (i >= L) break;
+    if (isBreak(gBase[i])) continue;                  // direkt an einen Umbruch geraten
     int start = i, j = i, lastSpace = -1;
-    while (j < L && textW(gBase.substring(start, j + 1)) <= maxW) {
+    while (j < L && !isBreak(gBase[j]) && textW(gBase.substring(start, j + 1)) <= maxW) {
       if (gBase[j] == ' ') lastSpace = j;
       j++;
     }
     int end; bool hy = false;
-    if (j >= L)                 end = L;               // Rest passt komplett
-    else if (lastSpace >= start) end = lastSpace;      // an letzter Wortgrenze
+    if (j >= L || isBreak(gBase[j])) end = j;          // Rest des Absatzes passt (bis \n/Ende)
+    else if (lastSpace >= start)     end = lastSpace;  // an letzter Wortgrenze
     else { end = (j > start) ? j : start + 1; hy = true; } // langes Wort hart trennen
     int e2 = end; while (e2 > start && gBase[e2 - 1] == ' ') e2--;
     lines[nLines] = { start, e2 };
@@ -303,6 +319,7 @@ void drawBaseLine(const Range &r, const GFXfont *f, int baselineY, int asc, bool
   int x  = (display.width() - lw) / 2;
   display.setCursor(x, baselineY);
   for (int k = r.s; k < r.e; k++) {
+    if (isBreak(gBase[k])) continue;      // Sicherheitsnetz: nie einen Zeilensprung drucken
     int bx = display.getCursorX();
     display.print(gBase[k]);
     int ax = display.getCursorX();
