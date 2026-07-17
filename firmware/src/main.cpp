@@ -45,13 +45,24 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      8
+#define FW_VERSION      10
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
-#define WIFI_TIMEOUT    8000  // ms pro WLAN-Versuch warten
-#define WIFI_TRIES      2     // Anzahl Verbindungsversuche, bevor aufgegeben wird
+#define WIFI_TIMEOUT    10000 // ms pro WLAN-Versuch warten
+#define WIFI_TRIES      3     // Anzahl Verbindungsversuche, bevor aufgegeben wird
 #define WIFI_MAX        5     // so viele bekannte WLANs merkt sich das Gerät
+#define RETRY_MINUTES   5     // Nachfass-Schlaf, wenn das Backend NICHT erreicht wurde.
+                              // Grund: schlägt ein Poll fehl (schwaches WLAN oder kalter
+                              // Gratis-Cloud-Server), wäre nach den vollen POLL_MINUTES der
+                              // Server längst wieder eingeschlafen -> das Gerät bekäme NIE
+                              // etwas. Der erste Versuch weckt den Server, der zweite kurz
+                              // darauf trifft ihn warm an.
+#define RETRY_MAX       3     // so oft kurz nachfassen, dann zurück auf den Normaltakt
+                              // (begrenzt den Akkuverbrauch, wenn das WLAN dauerhaft weg ist)
+#define FETCH_TRIES     3     // Abruf-Versuche auf der BESTEHENDEN WLAN-Verbindung. Bei schwachem
+                              // Signal klappt die Anmeldung oft, aber der Abruf verliert Pakete;
+                              // nachfassen ist hier fast gratis (WLAN ist schon an).
 #define BOOT_DIAG       0     // Boot-Diagnose (Tasten + I2C/Touch-Scan) ueber Serial; 1=an zum Debuggen
 #define HTTP_TIMEOUT    20000 // ms auf die Backend-Antwort warten. Hoch, weil ein
                               // schlafender Gratis-Cloud-Server (Render free) beim
@@ -76,7 +87,9 @@
 // Schrift &FreeSansBold24pt7b setzen (dann mehr Seiten pro Geschichte).
 #define READER_FONT (&FreeSansBold18pt7b)
 #define FOOTER_FONT (&FreeSans9pt7b)
-#define FOOTER_H     20    // reservierte Höhe unten (Absender / Seitenzähler)
+#define FOOTER_H     26    // reservierte Höhe unten (Fußzeile: Absender/Seite/Archiv).
+                           // Muss die Fußzeilenschrift PLUS Abstand fassen, sonst streifen
+                           // die Unterlängen der letzten Textzeile die Fußzeile.
 #define SIDE_MARGIN  26    // seitl. Rand fürs Umbrechen (zentrierter Text bleibt links+rechts von den Knopf-Labels)
 #define LABEL_FONT (&FreeSansBold9pt7b)  // Schrift der Knopf-Labels
 // Beide Knöpfe sitzen RECHTS in der unteren Displayhälfte, übereinander. Die zwei
@@ -104,6 +117,8 @@ WiFiClient net;
 PubSubClient mqtt(net);
 Preferences prefs;
 bool gOnline = false;              // hatte das Gerät in dieser Wach-Phase WLAN? (für Anzeige)
+bool gBackendOk = false;           // Daten wirklich vom Backend geholt? (steuert den Nachfass-Schlaf)
+bool gBusy = false;                // Gerät holt gerade Daten -> Ruhebild zeigt "sucht Post ..."
 
 String topicStatus = String("wichtel/") + DEVICE_ID + "/status";
 
@@ -161,6 +176,7 @@ RTC_DATA_ATTR int      navPage       = 0;    // Blätter-Position: Seite
 RTC_DATA_ATTR uint32_t navSig        = 0;    // Signatur des Archivs (zum Fortsetzen)
 RTC_DATA_ATTR uint32_t lastTaskSig   = 0;    // Signatur der offenen Aufgaben (neue erkennen)
 RTC_DATA_ATTR uint32_t lastReadTs    = 0;    // ts der zuletzt gelesenen Nachricht (alles <= gilt als gelesen)
+RTC_DATA_ATTR int      retryCount    = 0;    // wie oft in Folge schon kurz nachgefasst (0 = letzter Poll war ok)
 
 // Fern-Konfiguration (per Backend änderbar, in NVS gesichert, über Schlaf gemerkt)
 RTC_DATA_ATTR int  cfgPollMin    = POLL_MINUTES;
@@ -335,15 +351,36 @@ const GFXfont *TITLE_FONTS[] = { &FreeSansBold18pt7b, &FreeSansBold12pt7b, &Free
 bool isNightNow();   // (weiter unten definiert – für den Schlaf-Ruhebildschirm)
 
 // ---- Batterie ------------------------------------------------------------
+// Ab welcher Zellspannung gilt das Gerät als "wird geladen". Die Platine hat
+// keinen eigenen Lade-Status-Pin, daher Heuristik: hängt es am USB/Ladegerät,
+// hält der Laderegler die Zelle nahe 4,2 V (im Akkubetrieb sackt sie darunter).
+// Falls die Ladeanzeige am echten Gerät zu früh/zu spät kommt: Wert justieren.
+#define CHARGE_DETECT_MV 4180
+// Unter diesem Ladestand (%) wird gewarnt ("Akku laden!").
+#define LOW_BATT_PCT 15
+// Warndreieck mit Ausrufezeichen, linke-obere Ecke (x,y), Seitenlänge h.
+void drawWarnIcon(int x, int y, int h) {
+  display.drawTriangle(x + h/2, y, x, y + h, x + h, y + h, GxEPD_BLACK);
+  display.drawTriangle(x + h/2, y + 2, x + 2, y + h, x + h - 2, y + h, GxEPD_BLACK);
+  int cx = x + h/2;
+  display.drawFastVLine(cx - 1, y + h*4/10, h*3/10, GxEPD_BLACK);
+  display.drawFastVLine(cx,     y + h*4/10, h*3/10, GxEPD_BLACK);
+  display.fillRect(cx - 1, y + h*8/10, 2, 2, GxEPD_BLACK);
+}
 #if HAS_BATTERY
-int batteryPercent() {
+int batteryMilliVolts() {
   analogReadResolution(12);
   long sum = 0; const int N = 8;
   for (int i = 0; i < N; i++) { sum += analogReadMilliVolts(BATT_ADC_PIN); delay(2); }
-  float v = (sum / (float)N) * BATT_DIVIDER / 1000.0f;      // Batteriespannung in V
+  return (int)((sum / (float)N) * BATT_DIVIDER);           // Batteriespannung in mV
+}
+int batteryPercent() {
+  float v = batteryMilliVolts() / 1000.0f;
   int p = (int)((v - 3.30f) / (4.20f - 3.30f) * 100.0f);   // grobe LiPo-Kennlinie
   return p < 0 ? 0 : p > 100 ? 100 : p;
 }
+// Heuristische Lade-Erkennung (siehe CHARGE_DETECT_MV oben).
+bool isCharging() { return batteryMilliVolts() >= CHARGE_DETECT_MV; }
 // kleines Batteriesymbol (Rahmen + Füllung + Pluspol)
 void drawBatteryIcon(int x, int y, int pct) {
   const int w = 22, h = 11;
@@ -352,8 +389,16 @@ void drawBatteryIcon(int x, int y, int pct) {
   int fill = (w - 4) * pct / 100;
   if (fill > 0) display.fillRect(x + 2, y + 2, fill, h - 4, GxEPD_BLACK);
 }
+// kleiner Blitz (Ladesymbol), unten-links bei (x,y), Höhe h.
+void drawBoltIcon(int x, int y, int h) {
+  int w = h / 2;
+  display.fillTriangle(x + w, y,          x,         y + h*6/10, x + w/2, y + h*6/10, GxEPD_BLACK);
+  display.fillTriangle(x,     y + h*4/10, x + w,     y + h,      x + w/2, y + h*4/10, GxEPD_BLACK);
+}
 #else
 int batteryPercent() { return -1; }
+bool isCharging() { return false; }
+void drawBoltIcon(int, int, int) {}
 #endif
 
 // Ein SENKRECHTES Wort am rechten Rand (unteres Ende bei yBottom). Weißer Streifen
@@ -512,25 +557,20 @@ void renderCurrent() {
     display.fillScreen(GxEPD_WHITE);
     int y = M + gAsc;
     for (int i = start; i < end; i++) { drawBaseLine(lines[i], READER_FONT, y, gAsc, hyph[i]); y += gLineH; }
-    // Absender mittig unten
+    // EINE Fußzeile ganz unten: Absender + Seitenzahl + welche gespeicherte Nachricht.
+    // Früher standen Seitenzahl und Archiv-Hinweis OBEN - genau dort beginnt aber die
+    // erste Textzeile (Grundlinie M+gAsc), sie überlappten also zwangsläufig. Der
+    // Textbereich hält unten FOOTER_H frei, hier kollidiert nichts.
     display.setFont(FOOTER_FONT); display.setTextColor(GxEPD_BLACK);
-    String fr = "von Lumbi";
-    display.setCursor((W - textW(fr)) / 2, H - 5);
-    display.print(fr);
-    // Seitenzähler oben rechts (nur wenn mehrseitig)
-    if (pc > 1) {
-      String pg = String(curPage + 1) + "/" + String(pc);
-      display.setFont(FOOTER_FONT);
-      display.setCursor(W - M - textW(pg), M + 12);
-      display.print(pg);
-    }
-    // kleiner Archiv-Hinweis oben links (welche gespeicherte Nachricht)
-    if (archiveN > 1) {
+    const int footMaxW = W - 2 * SIDE_MARGIN;         // bleibt links+rechts von den Knopf-Labels
+    String foot = "von Lumbi";
+    if (pc > 1) foot += "  " + String(curPage + 1) + "/" + String(pc);
+    if (archiveN > 1) {                               // nur anfügen, solange es noch passt
       String am = (curMsg == 0) ? String("neu") : String(curMsg + 1) + ".";
-      display.setFont(FOOTER_FONT);
-      display.setCursor(M, M + 12);
-      display.print(am);
+      if (textW(am + "  " + foot) <= footMaxW) foot = am + "  " + foot;
     }
+    display.setCursor((W - textW(foot)) / 2, H - 6);
+    display.print(foot);
     // Knopf-Labels: oberer = weiter blättern, unterer = löschen
     drawButtonLabels("WEITER", "LOESCHEN");
   } while (display.nextPage());
@@ -942,7 +982,18 @@ void goToSleep() {
   WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
 
   uint64_t sleepSec = (uint64_t)cfgPollMin * 60ULL;
-  if (timeValid && isNightNow()) sleepSec = secondsUntilMorning();
+  if (timeValid && isNightNow()) {
+    sleepSec  = secondsUntilMorning();          // nachts durchschlafen, kein Nachfassen
+    retryCount = 0;
+  } else if (!gBackendOk && retryCount < RETRY_MAX) {
+    // Backend nicht erreicht (kein WLAN oder Server war kalt) -> bald nochmal probieren,
+    // statt den vollen Poll-Takt zu verschlafen. Sonst schläft ein Gratis-Cloud-Server
+    // zwischenzeitlich wieder ein und das Gerät bekommt NIE eine Nachricht.
+    sleepSec = (uint64_t)RETRY_MINUTES * 60ULL;
+    retryCount++;
+  } else {
+    retryCount = 0;                             // geschafft (oder genug nachgefasst) -> Normaltakt
+  }
   esp_sleep_enable_timer_wakeup(sleepSec * 1000000ULL);
 
 #if HAS_POWER_LATCH
@@ -1065,24 +1116,32 @@ void runIdleInteractive() {
 
 #if HAS_BACK_BUTTON
 // Sicherheitsabfrage vor dem Löschen: oben NEIN, unten JA. true = löschen.
+// Rückfrage vor dem Löschen. WICHTIG für die Sicherheit gegen Fehlgriffe:
+// Ausgelöst wird das Löschen mit dem UNTEREN Knopf - deshalb liegt hier unten
+// ABBRECHEN. Wer reflexhaft zweimal unten tippt, bricht also ab, statt zu löschen.
+// "Ja, löschen" verlangt bewusst den ANDEREN Knopf (oben).
 bool confirmDelete() {
   const int W = display.width(), H = display.height();
   const int maxW = W - 2 * marginPx();
   display.setFullWindow(); display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
-    drawCenteredFit("Loeschen?", H / 2 + 6, TITLE_FONTS, 3, maxW);
-    drawButtonLabels("NEIN", "JA");
+    drawCenteredFit("Wirklich", H / 2 - 12, TITLE_FONTS, 3, maxW);
+    drawCenteredFit("loeschen?", H / 2 + 18, TITLE_FONTS, 3, maxW);
+    drawButtonLabels("JA, WEG", "ABBRECHEN");
   } while (display.nextPage());
   waitButtonsReleased();
   unsigned long t0 = millis();
+  // Kurze Eingabesperre: verhindert, dass ein noch nachfedernder oder zu lange
+  // gehaltener Knopfdruck vom Reader hier gleich mit durchschlägt.
+  while (millis() - t0 < 400) delay(10);
   int bootPrev = HIGH, pwrPrev = HIGH;
   for (;;) {
     int b = digitalRead(BTN_WAKE), p = digitalRead(BTN_POWER);
-    if (bootPrev == HIGH && b == LOW) return false;   // NEIN
-    if (pwrPrev == HIGH && p == LOW) return true;     // JA
+    if (bootPrev == HIGH && b == LOW) return true;    // oben = JA, LOESCHEN
+    if (pwrPrev == HIGH && p == LOW) return false;    // unten = ABBRECHEN (sicherer Reflex)
     bootPrev = b; pwrPrev = p;
-    if (millis() - t0 > IDLE_SLEEP_MS) return false;
+    if (millis() - t0 > IDLE_SLEEP_MS) return false;  // Zeitablauf -> nicht löschen
     delay(15);
   }
 }
@@ -1092,6 +1151,8 @@ bool confirmDelete() {
 // unterer Knopf = Nachricht löschen (mit Sicherheitsabfrage).
 void runReader() {
   epdBegin();                 // Display einmal initialisieren, dann nur neu zeichnen
+  display.clearScreen();      // sauberer Vollbild-Reset gegen Geisterbilder (Reste des
+                              // Ruhebilds/Info-Kastens auf Höhe der letzten Textzeile)
   renderCurrent();
   if (archive[curMsg].ts > lastReadTs) lastReadTs = archive[curMsg].ts;  // als gelesen markieren
 
@@ -1292,18 +1353,40 @@ void drawWifiIcon(int cx, int baseY, bool connected) {
   }
 }
 
+// Arbeits-/Ladebildschirm beim Aufwecken: NUR der Text "Der Wichtel arbeitet",
+// kein Gesicht, nichts weiter. Überbrückt die ~15-20 s WLAN + Abruf.
+void renderWorking() {
+  const int W = display.width(), H = display.height();
+  const int maxW = W - 2 * marginPx();
+  const GFXfont *f[] = { &FreeSansBold18pt7b, &FreeSansBold12pt7b, &FreeSansBold9pt7b };
+  display.setFullWindow(); display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    drawCenteredFit("Der Wichtel", H / 2 - 6, f, 3, maxW);
+    drawCenteredFit("arbeitet",    H / 2 + 30, f, 3, maxW);
+  } while (display.nextPage());
+}
+
 void renderScreensaver() {
   const int W = display.width(), H = display.height();
   Mood m = (timeValid && isNightNow()) ? MOOD_SLEEP : MOOD_WAIT;
   int fx = (W - FACE_SM_W) / 2, fy = 6;
   int bpct = batteryPercent();
+  bool charging = isCharging();
+  bool lowBatt = (bpct >= 0 && bpct < LOW_BATT_PCT && !charging);
   char tbuf[6] = "";
   if (timeValid) { struct tm t; if (getLocalTime(&t, 5)) strftime(tbuf, sizeof(tbuf), "%H:%M", &t); }
   int unread = unreadCount();
   String info;
-  if (unread > 0) info = String(unread) + " neue Post";
-  if (tasksN > 0) { if (info.length()) info += "  "; info += String(tasksN) + " Aufg."; }
-  if (info.length() == 0) info = "Nichts Neues";
+  if (gBusy) {
+    // Überbrückt die ~15-20 s, die WLAN + Abruf brauchen. Ohne das steht hier der
+    // ALTE Stand ("Nichts Neues") und das Gerät wirkt eingefroren, obwohl es arbeitet.
+    info = "Der Wichtel arbeitet.";
+  } else {
+    if (unread > 0) info = String(unread) + " neue Post";
+    if (tasksN > 0) { if (info.length()) info += "  "; info += String(tasksN) + " Aufg."; }
+    if (info.length() == 0) info = lowBatt ? "Akku laden!" : "Nichts Neues";
+  }
   display.setFullWindow(); display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
@@ -1312,10 +1395,31 @@ void renderScreensaver() {
     drawCenteredFit("Hallo Max!", fy + FACE_SM_H + 22, tf, 1, W - 2 * marginPx());
     display.setFont(FOOTER_FONT); display.setTextColor(GxEPD_BLACK);
     int iw = textW(info) + 12, ix = (W - iw) / 2, iy = H - 42;
-    display.drawRect(ix, iy, iw, 20, GxEPD_BLACK);
-    display.setCursor(ix + 6, iy + 14); display.print(info);
+    // Rahmen nur zeichnen, solange er links wie rechts frei steht (rechts liegt ab
+    // W-20 der senkrechte Knopf-Label-Streifen). Passt er nicht, steht der Text ohne
+    // Kasten da - besser als ein Rahmen, der unter das Label läuft.
+    if (ix >= 4 && ix + iw <= W - 24) {
+      display.drawRect(ix, iy, iw, 20, GxEPD_BLACK);
+      display.setCursor(ix + 6, iy + 14);
+    } else {
+      display.setCursor((W - textW(info)) / 2, iy + 14);
+    }
+    display.print(info);
     if (tbuf[0]) { display.setCursor(6, H - 4); display.print(tbuf); }
-    if (bpct >= 0) { String pc = String(bpct) + "%"; display.setCursor(W - 26 - textW(pc), H - 4); display.print(pc); }
+    if (bpct >= 0) {
+      // Beim Laden: kleiner Blitz + "laedt" links vom Prozentwert, sonst nur %.
+      String pc = String(bpct) + "%";
+      int px = W - 26 - textW(pc);
+      display.setCursor(px, H - 4); display.print(pc);
+      if (charging) {
+        const char *lbl = "laedt";
+        int lx = px - 6 - textW(lbl);
+        display.setCursor(lx, H - 4); display.print(lbl);
+        drawBoltIcon(lx - 12, H - 15, 12);
+      } else if (lowBatt) {
+        drawWarnIcon(px - 16, H - 15, 12);       // Warndreieck links vom Prozentwert
+      }
+    }
     drawWifiIcon(W - 16, 18, gOnline);          // WLAN-Status oben rechts
     drawButtonLabels("MENU", "");
   } while (display.nextPage());
@@ -1577,6 +1681,7 @@ bool consoleExec(String line, Print &out) {
     out.printf("WLAN: %s (%d dBm)\n", WiFi.status() == WL_CONNECTED ? "verbunden" : "getrennt", WiFi.RSSI());
     out.printf("Nachrichten: %d, Aufgaben: %d\n", archiveN, tasksN);
     out.printf("Config: poll=%dmin, Nacht %d-%d Uhr, vol=%d\n", cfgPollMin, cfgNightStart, cfgNightEnd, cfgVolume);
+    out.printf("Backend: %s, Nachfass-Versuche: %d/%d\n", gBackendOk ? "erreicht" : "NICHT erreicht", retryCount, RETRY_MAX);
     { int bp = batteryPercent(); if (bp >= 0) out.printf("Batterie: %d%%\n", bp); }
 #if HAS_AUDIO
     out.println("Onboard-Audio (ES8311) vorhanden: i2c scan zeigt 0x18");
@@ -1880,18 +1985,22 @@ void setup() {
   // Nachtruhe: reines Timer-Aufwachen nachts -> ohne WLAN weiterschlafen.
   if (timerWake && timeValid && isNightNow()) goToSleep();
 
-  // ---- Sofort-Feedback bei Tastendruck ----
-  // WLAN + Cloud-Abruf dauern ~10-20 s. Damit ein KURZER Tastendruck sofort
-  // sichtbar quittiert wird (statt "eingefroren" zu wirken), zeichnen wir gleich
-  // das Ruhebild aus dem Cache. NUR bei interaktivem Aufwachen (Tastendruck/
-  // Kaltstart), nicht beim stillen 30-min-Timer -> dort kein unnötiges Flackern.
+  // ---- Sofort-Feedback + Warte-Bildschirm bei Tastendruck ----
+  // WLAN + Cloud-Abruf dauern ~10-20 s. Damit ein KURZER Tastendruck sofort sichtbar
+  // quittiert wird (statt "eingefroren" zu wirken), zeichnen wir gleich das Ruhebild
+  // aus dem Cache - mit gBusy, also der Meldung "sucht Post ..." statt des veralteten
+  // Stands. Nach dem Abruf wird es mit dem echten Ergebnis überzeichnet (gBusy wechselt
+  // von true auf false -> postSig != saverSig -> Neuzeichnen ist garantiert).
+  // NUR bei interaktivem Aufwachen, nicht beim stillen 30-min-Timer (kein Flackern).
   bool saverDrawn = false; int saverSig = -1;
 #if HAS_BACK_BUTTON
   if (interactive) {
     loadArchiveNVS();                        // gecachte Nachrichten fürs Ruhebild
-    epdBegin(); renderScreensaver(); epdEnd();
-    saverDrawn = true;
-    saverSig = unreadCount() * 100 + tasksN + (isNightNow() ? 100000 : 0) + (gOnline ? 1000000 : 0);
+    // Sofort-Feedback: klarer Arbeits-Bildschirm ("Der Wichtel arbeitet"),
+    // wird nach dem Abruf durch das echte Ruhebild ersetzt.
+    epdBegin(); renderWorking(); epdEnd();
+    saverDrawn = false;                       // Arbeits-Bild ist nicht das Ruhebild -> danach neu zeichnen
+    saverSig = -2;
   }
 #endif
 
@@ -1919,10 +2028,19 @@ void setup() {
     syncTimeNTP();
     checkOTA();                                 // ggf. neue Firmware aus der Ferne (startet neu)
     pullRemote();                               // Fern-Befehle + Config anwenden
-    if (!httpFetchState()) loadArchiveNVS();   // Backend leer/Fehler -> Cache
+    // Mehrfach abrufen, solange das WLAN schon steht: bei schwachem Signal gelingt die
+    // Anmeldung oft noch, aber der HTTPS-Abruf bricht ab (Paketverlust). Ein weiterer
+    // Versuch auf der BESTEHENDEN Verbindung kostet fast nichts - das Teure (WLAN-Anmeldung)
+    // ist längst bezahlt. Erst DAS zählt als "erreicht"; WLAN allein reicht nicht.
+    for (int i = 0; i < FETCH_TRIES && !gBackendOk; i++) {
+      if (i) delay(1500);                       // dem Link kurz Zeit geben
+      gBackendOk = httpFetchState();
+    }
+    if (!gBackendOk) loadArchiveNVS();          // Backend nicht erreicht -> Cache
   } else {
     loadArchiveNVS();
   }
+  gBusy = false;                                 // fertig gesucht -> Ruhebild zeigt wieder den Stand
 
   bool newTasks = (tasksN > 0) && (taskSig() != lastTaskSig);
   bool newMsg   = (archiveN > 0) && (hashMsg(archive[0].text, archive[0].from) != lastShownHash);

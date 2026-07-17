@@ -68,11 +68,11 @@
     </div>
 
     <div class="card">
-      <label for="text">Nachricht vom Wichtel</label>
+      <label for="text">Nachricht von Lumbi</label>
       <textarea id="text" placeholder="Hallo Max! Heute war ich auf dem Dach …"></textarea>
       <div class="presets" id="presets"></div>
       <label for="from">Absender</label>
-      <input id="from" value="Wichtel" />
+      <input id="from" value="Lumbi" />
       <button class="send" id="send">🎁 An den Wichtel senden</button>
     </div>
 
@@ -246,12 +246,12 @@ function renderHistory(history) {
     txt.className = "hist-txt"; txt.textContent = m.text;
     const meta = document.createElement("div");
     meta.className = "hist-meta";
-    meta.textContent = "– " + (m.from || "Wichtel") + " · " + new Date(m.ts).toLocaleString("de-DE");
+    meta.textContent = "– " + (m.from || "Lumbi") + " · " + new Date(m.ts).toLocaleString("de-DE");
     body.appendChild(txt); body.appendChild(meta);
     const again = document.createElement("button");
     again.className = "hist-again"; again.textContent = "nochmal";
     again.title = "Diese Nachricht erneut ans Gerät senden";
-    again.onclick = () => resend(m.text, m.from || "Wichtel");
+    again.onclick = () => resend(m.text, m.from || "Lumbi");
     item.appendChild(body); item.appendChild(again);
     box.appendChild(item);
   });
@@ -277,7 +277,8 @@ async function refresh() {
     const on = s.deviceOnline;
     $("dot").className = "dot" + (on ? " on" : "");
     let st = on ? "Gerät online" : "Gerät offline";
-    if (typeof s.deviceBatt === "number" && s.deviceBatt >= 0) st += " · 🔋 " + s.deviceBatt + "%";
+    if (typeof s.deviceBatt === "number" && s.deviceBatt >= 0)
+      st += (s.deviceBatt < 15 ? " · ⚠️ Akku fast leer: " : " · 🔋 ") + s.deviceBatt + "%";
     if (s.deviceFw) st += " · Firmware v" + s.deviceFw;
     if (s.ota && s.ota.hasBin && s.ota.version > (s.deviceFw || 0))
       st += " · Update v" + s.ota.version + " bereit";
@@ -349,7 +350,7 @@ async function saveConfig() {
 async function createTask() {
   const text = $("taskText").value.trim();
   if (!text) { toast("Bitte erst eine Aufgabe eintippen"); return; }
-  const from = $("from").value.trim() || "Wichtel";
+  const from = $("from").value.trim() || "Lumbi";
   const scope = $("taskScope").value;
   const r = await fetch("/api/task", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -382,7 +383,7 @@ async function resend(text, from) {
 
 async function send() {
   const text = $("text").value.trim();
-  const from = $("from").value.trim() || "Wichtel";
+  const from = $("from").value.trim() || "Lumbi";
   if (!text) { toast("Bitte erst eine Nachricht eintippen"); return; }
   const r = await fetch("/api/message", {
     method: "POST", headers: { "Content-Type": "application/json" },

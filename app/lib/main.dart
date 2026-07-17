@@ -162,7 +162,11 @@ class _HomePageState extends State<HomePage> {
                       color: online ? Colors.greenAccent : Colors.grey),
                   const SizedBox(width: 4),
                   if (batt is int && batt >= 0)
-                    Text('🔋$batt% ', style: const TextStyle(fontSize: 13)),
+                    Text(batt < 15 ? '⚠️$batt% ' : '🔋$batt% ',
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: batt < 15 ? Colors.orangeAccent : null,
+                            fontWeight: batt < 15 ? FontWeight.bold : null)),
                 ]),
               ),
             ),
@@ -256,7 +260,7 @@ class SendTab extends StatefulWidget {
 
 class _SendTabState extends State<SendTab> {
   final _text = TextEditingController();
-  final _from = TextEditingController(text: 'Wichtel');
+  final _from = TextEditingController(text: 'Lumbi');
   bool _sending = false;
 
   static const _presets = [
@@ -279,7 +283,7 @@ class _SendTabState extends State<SendTab> {
     final t = _text.text.trim();
     if (t.isEmpty) { widget.toast('Bitte eine Nachricht eintippen'); return; }
     setState(() => _sending = true);
-    final ok = await Api.post('/api/message', {'text': t, 'from': _from.text.trim().isEmpty ? 'Wichtel' : _from.text.trim()});
+    final ok = await Api.post('/api/message', {'text': t, 'from': _from.text.trim().isEmpty ? 'Lumbi' : _from.text.trim()});
     setState(() => _sending = false);
     if (ok) { _text.clear(); widget.toast('🎁 Gesendet!'); widget.refresh(); }
     else { widget.toast('Fehler beim Senden'); }
@@ -291,7 +295,7 @@ class _SendTabState extends State<SendTab> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Nachricht vom Wichtel', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Nachricht von Lumbi', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         TextField(
           controller: _text,
@@ -353,7 +357,7 @@ class _TasksTabState extends State<TasksTab> {
     final t = _text.text.trim();
     if (t.isEmpty) { widget.toast('Bitte eine Aufgabe eintippen'); return; }
     setState(() => _busy = true);
-    final ok = await Api.post('/api/task', {'text': t, 'scope': _scope, 'from': 'Wichtel'});
+    final ok = await Api.post('/api/task', {'text': t, 'scope': _scope, 'from': 'Lumbi'});
     setState(() => _busy = false);
     if (ok) { _text.clear(); widget.toast('✅ Aufgabe hinzugefügt'); widget.refresh(); }
     else { widget.toast('Fehler'); }
@@ -455,7 +459,11 @@ class MaxTab extends StatelessWidget {
                 const SizedBox(width: 6),
                 Text(online ? 'online' : 'offline'),
                 const Spacer(),
-                if (batt is int && batt >= 0) Text('🔋 $batt%'),
+                if (batt is int && batt >= 0)
+                  Text(batt < 15 ? '⚠️ Akku fast leer: $batt%' : '🔋 $batt%',
+                      style: TextStyle(
+                          color: batt < 15 ? Colors.orangeAccent : null,
+                          fontWeight: batt < 15 ? FontWeight.bold : null)),
               ]),
               if (fw != null) Padding(
                 padding: const EdgeInsets.only(top: 6),

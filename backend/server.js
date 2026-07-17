@@ -121,7 +121,7 @@ if (ENABLE_MQTT) {
   console.log("MQTT deaktiviert (ENABLE_MQTT=0) – Online-Status per HTTP-Heartbeat");
 }
 
-function sendMessage(text, from = "Wichtel") {
+function sendMessage(text, from = "Lumbi") {
   const msg = { text, from, ts: Date.now() };
   state.last = msg;
   state.history.unshift(msg);
@@ -183,7 +183,7 @@ function annotateTasks() {
   return state.tasks.map(t => ({ ...t, done: doneThisPeriod(t), open: !doneThisPeriod(t) }));
 }
 
-function addTask(text, from = "Wichtel", scope = "once") {
+function addTask(text, from = "Lumbi", scope = "once") {
   if (!["once", "day", "week", "month"].includes(scope)) scope = "once";
   const t = { id: state.nextTaskId++, text, from, ts: Date.now(),
               scope, done: false, doneAt: null, lastDoneDate: null };
@@ -313,7 +313,7 @@ app.get("/api/firmware.bin", (_req, res) => {
 
 app.post("/api/message", (req, res) => {
   const text = (req.body?.text || "").toString().trim();
-  const from = (req.body?.from || "Wichtel").toString().trim() || "Wichtel";
+  const from = (req.body?.from || "Lumbi").toString().trim() || "Lumbi";
   if (!text) return res.status(400).json({ error: "text fehlt" });
   res.json({ ok: true, message: sendMessage(text, from) });
 });
@@ -348,7 +348,7 @@ app.post("/api/cmd", (req, res) => {
 // ---- Aufgaben-API --------------------------------------------------------
 app.post("/api/task", (req, res) => {
   const text = (req.body?.text || "").toString().trim();
-  const from = (req.body?.from || "Wichtel").toString().trim() || "Wichtel";
+  const from = (req.body?.from || "Lumbi").toString().trim() || "Lumbi";
   const scope = (req.body?.scope || "once").toString();
   if (!text) return res.status(400).json({ error: "text fehlt" });
   res.json({ ok: true, task: addTask(text, from, scope) });

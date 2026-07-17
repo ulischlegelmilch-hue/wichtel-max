@@ -1,0 +1,151 @@
+<!doctype html><html lang="de"><head><meta charset="utf-8">
+<style>
+@page { size: A4; margin: 0; }
+* { box-sizing: border-box; }
+body { margin:0; font-family:"Comic Sans MS","Trebuchet MS",sans-serif; color:#243b2a; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+.page { width:210mm; height:297mm; padding:15mm 16mm; page-break-after:always; position:relative; background:#fbf7ec; overflow:hidden; }
+.page:last-child { page-break-after:auto; }
+h1 { font-size:32pt; color:#1f7a3d; margin:0 0 4pt; line-height:1.05; }
+h2 { font-size:22pt; color:#c0392b; margin:0 0 10pt; }
+.chap { font-size:15pt; color:#b8860b; letter-spacing:1px; margin:0 0 2pt; }
+p  { font-size:15.5pt; line-height:1.55; margin:0 0 10pt; }
+.story p { font-size:16pt; line-height:1.6; }
+.big { font-size:17pt; }
+b { color:#1f7a3d; }
+.card { background:#ffffff; border:3px solid #e6dcc2; border-radius:22px; padding:16pt 18pt; margin:0 0 14pt; box-shadow:0 3px 0 #e6dcc2; }
+.card.green { border-color:#bfe3c9; box-shadow:0 3px 0 #bfe3c9; }
+.card.red { border-color:#f2c9c3; box-shadow:0 3px 0 #f2c9c3; }
+.card.gold { border-color:#f0dca0; box-shadow:0 3px 0 #f0dca0; }
+.row { display:flex; align-items:center; gap:16pt; }
+.face { width:40mm; height:40mm; flex:0 0 auto; }
+.face.sm { width:26mm; height:26mm; }
+.face.lg { width:52mm; height:52mm; }
+.ct { font-size:15.5pt; line-height:1.45; }
+.step { display:flex; align-items:center; gap:14pt; margin:0 0 12pt; }
+.foot { position:absolute; bottom:9mm; left:16mm; right:16mm; text-align:center; font-size:12pt; color:#9a8f76; }
+.hi { background:#fff4d6; border-radius:8px; padding:1pt 7pt; }
+.btns { display:flex; gap:16pt; }
+.btn { flex:1; text-align:center; background:#fff; border:3px solid #e6dcc2; border-radius:18px; padding:14pt; }
+.knob { width:22mm; height:22mm; border-radius:50%; margin:0 auto 8pt; display:flex; align-items:center; justify-content:center; font-size:26pt; color:#fff; }
+.k-top { background:#1f7a3d; } .k-bot { background:#c0392b; }
+.btn .lbl { font-size:17pt; font-weight:bold; } .btn .sub { font-size:12.5pt; color:#6a7d6f; }
+.title-emoji { font-size:24pt; }
+ul.simple { margin:6pt 0 0; padding-left:0; list-style:none; }
+ul.simple li { font-size:15.5pt; line-height:1.5; margin-bottom:7pt; }
+.center { text-align:center; }
+.page.tight { padding-top:9mm; }
+.page.tight h1 { font-size:28pt; }
+.page.tight .title-emoji { font-size:20pt; }
+.page.tight .story p, .page.tight p { line-height:1.4; font-size:15pt; }
+.page.tight .card { padding:12pt 16pt; }
+</style></head><body>
+
+<!-- ===== SEITE 1: Kurze Geschichte ===== -->
+<div class="page story tight">
+  <div class="center">
+    <div class="title-emoji">🎄❄️✨❄️🎄</div>
+    <h1>Warum ich so lange still war</h1>
+    <p class="chap">Eine kleine Wichtel-Geschichte für Max</p>
+  </div>
+  <div class="center" style="margin:1mm 0"><img class="face" src="data:image/png;base64,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"></div>
+  <div class="card" style="margin-bottom:9pt">
+    <p>Lieber Max! Weit hinten im tief verschneiten <b>Wichtelwald</b> wohne ich, dein
+      Wichtel <b>Lumbi</b>. So lange hast du nichts von mir gehört — und jetzt erzähle
+      ich dir endlich, warum.</p>
+    <p style="margin-bottom:0">Ich wollte dir schon so gerne schreiben! Aber dafür musste ich erst ein kleines
+      <b>Zauber-Kästchen</b> bauen — die <b>Wichtel-Post</b>. Und das war gar nicht
+      leicht: Mal blinkte das Licht nicht richtig, mal verlor sich ein Wort auf dem
+      weiten Weg zu dir. Immer wieder klemmte irgendetwas.</p>
+  </div>
+  <div class="card green" style="margin-bottom:9pt">
+    <p>Und weißt du, wer mir dabei geholfen hat? <b>Dein Papa!</b> Er ist nämlich ein
+      heimlicher <b>Wichtel-Helfer</b>. Er hat lange mit mir getüftelt und die
+      <b>allerletzten Probleme gelöst</b> — bis meine Worte jetzt sicher bei dir
+      ankommen. 🔨⚙️✨</p>
+    <p class="big" style="margin-bottom:0">Deshalb war ich so lange still. Aber jetzt bin ich <b>endlich wieder
+      da</b>, und wir können uns schreiben, sooft wir wollen! 💌</p>
+  </div>
+  <div class="card gold" style="margin-bottom:0">
+    <p class="big" style="margin-bottom:0">Und heute passiert noch etwas ganz Schönes: <b>Papa reist mit dir in
+      den Urlaub — nach Rügen! 🌊⛱️</b> Ich wünsche euch ganz viel Sonne, Sandburgen und
+      tolle Abenteuer. <b>Dein Lumbi</b> 💚</p>
+  </div>
+  <div class="foot">Und so funktioniert dein Zauber-Kästchen → (nächste Seiten)</div>
+</div>
+
+<!-- ===== SEITE 5: Aufwecken + Knöpfe ===== -->
+<div class="page">
+  <h2>So weckst du mich auf 🌟</h2>
+  <div class="card green">
+    <div class="row">
+      <img class="face sm" src="data:image/png;base64,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">
+      <div class="ct big">Wenn mein Bild sich nicht bewegt, <b>schlafe</b> ich gerade.
+        <b>Drücke einfach einen Knopf</b> — dann werde ich wach! 😊</div>
+    </div>
+  </div>
+
+  <h2 style="margin-top:6mm">Meine zwei Knöpfe 🔘</h2>
+  <p>An meiner Seite habe ich <b>zwei Knöpfe</b> — einen <b>oben</b> und einen <b>unten</b>:</p>
+  <div class="btns">
+    <div class="btn">
+      <div class="knob k-top">▲</div>
+      <div class="lbl">Oberer Knopf</div>
+      <div class="sub">WEITER —<br>zum nächsten blättern</div>
+    </div>
+    <div class="btn">
+      <div class="knob k-bot">✓</div>
+      <div class="lbl">Unterer Knopf</div>
+      <div class="sub">OK —<br>auswählen &amp; bestätigen</div>
+    </div>
+  </div>
+
+  <div class="card gold" style="margin-top:12pt">
+    <div class="ct big">🪄 <b>Mein Zaubertrick:</b> Willst du zurück zum Anfang?
+      <b>Halte den oberen Knopf lang gedrückt</b> (zähl langsam bis 2) — schon bist du
+      wieder im <b>Hauptmenü</b>, egal wo du gerade bist!</div>
+  </div>
+
+  <div class="card" style="margin-top:10pt">
+    <div class="ct">Oben rechts auf meinem Bild siehst du zwei kleine Zeichen:<br>
+      <span class="hi">📶 Verbindung</span> — habe ich Kontakt zur Wichtel-Post?<br>
+      <span class="hi">🔋 mein Bauch</span> — habe ich noch genug Kraft?</div>
+  </div>
+  <div class="foot">Noch eine Seite — da kommt das Beste! →</div>
+</div>
+
+<!-- ===== SEITE 6: Aktivitäten + Pflege ===== -->
+<div class="page">
+  <h2>Das kannst du mit mir machen 🎁</h2>
+  <div class="step">
+    <img class="face sm" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAL4AAAC+CAYAAACLdLWdAAAIWElEQVR4nO2dS5bdKAxASZ+so/a/rreRZNLudrnACBAfSfdOMkg9g+EiY35OCQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgNr92ZyAiX19ff0r/9/l8qJMFUMiLeJM9Bw1gLhTuAkrS3+WW/A3oQaFO5im0ROSe30AbFOhE7gL3yDv6eyjzz+4MeEVDWklXCPpA/AloRmrknwPiK0P3xAaIPwlN6Yn6+iC+IkhpB8RXYnYXh26TLoivDILaAPEVWNHFoRulC+IrQrS3A+IP0huJieB7QXwlRpckSP+Op4oOiD+ARtSuXYMnwxwQX4GeKCyZlGKV5jwoyE4uKUdkbInmSK8LEX8jn8/nl0RopNeHAu1AI9q/XfcC4efxe3cGrDHzZfPz+fw64WU2QgN0d0OzmRXtV6dRSrOGl0bg4iZWsUrIleP2vU8Y6w2Al9sDWSXVSLfqhC7ZCIgvZEf3456uletaAfEPxUJXwnLjQXwBu6L9M/1V17vmF3rOALIC4h/M6oaWk13aAKyB+BV2R/tnPkAHxD+cVQ2uls7uhq8N4r9wWpTVys+z++JNagmIL2C3GLPO1Wnpv58WBEZB/ALeKhq+g/gVdkf7i52nqXkMAohviB2NUDLmvyovmiB+BgsRjrN8xkD8F06MZiu6PF9fX38k1z6xfKQgPnwjyrp8xH9g4fG+80XXyxIGxIf/8PoimwPxC5xeyauj/unl0QriG0ZTxmhfW0f8Gxb69xfPvM7Ku0fpU0J806yS3yOIn8FClLOQx5NBfMPkhhajHhfSCuL/i+Vugpa094bkZby+BOI/sFrZmsObVsugBcR3BB+CloP4CUkigvjOGIn616pM6epMyyC+Q3rkz/2dZ/kR/0aEl7ocb4J7lT+8+F4rlhfdd0KL7/37sR7vSYvQ4l9EEKR39aXXsgkrfpTHv7TLkxPcq/Qp8fE315XbSqSyCBnxo0T7C150fxJS/ItIEQ6+E078qBGPqP+dcOJfEO1jE0r86JGOqP8/ocS/INpDGAF2zdK2RtYVefM+Yy0h3Dj+7Ioe7UI8f699dk5U0Z+EE38WvYet1n6n/dXFS/7offwQrX/mo70k0Gg6s042y1034lMgxA3PEH+lQNppzexOWSHEDWuKvzNiaqYdXX73N6tZwafIotUAIo/uhBrHH4mOp0h/pa11glpUQonfQ074U6LjqPyRZ3Jdiz/6KD8pypd4NsQIR4No4Fr8EZ6NZrX0rWfc9Eb/ExvzCkKI31K5T9FOEUPSAEa7PpGeFCHElyLp2uw+aayWNi+9MtyKPxrtcgKt/AJJ7Unz1gBa5T/lqbYSt+K3IJE+97vZwlzvFm/paMkfDbctXdpPb5V+d3TsaYSSsjjxvWYm7iP+iPQt11pF6QkwcjhsRNyLL6V2mtgJ0t9pyRPdnp+EFV/6aD9N+CeS94Dr70b+3xtub/ZtA0e0/uydt3uP9HXzcBE/svQpldfnSHaCeeoima/4ljHqWevyd+3j1d6JJcVDwDB7Az0rEbUXreXSaL3mzjRb1/V7elqazLx0aUHp9zM2bWhLIdlkProRvWeOwov85vv4pcIvjXSMSP82ejJjyLO2Vuj6/95uy/36vUOjVjEnfmvE0erL1yLv/eVP+2ydexqlv5uR5ozfnII58S96hJ5xtEip8kelyL2Uz4i2LQ1a8hsrmBL/TaZZAqa0doKrNoIzUzrNJ8jpmBK/xL2LoTn0V2tos2RcvRe2NJElnRW2iEnxnxWR23d6/3c2M58292vVJpE00vMe6S9Mil9i1mTVE8kTxhq5YLIrLytwJX5KZ1WY1vj67PQiYlL8ltnMERnexux7r6mVh9lpze5S7cak+DUsV8zuqN2S/u68jmBK/F1T6j0NafRJs3qiLkdpIk07nR2YEv/OqgVjpWUBI/136Uvxrs0ykqXLlqN9SsYXqb1tpJg5sdS6IV0aJSWL31bOoj7LGfE3k6uAVZXSsuqzJU+1ZQk7lg3sOlZlBWZv4PRK6VlfM3NNTi8e1+mkZLiPb6ECWvM4usx4NhbKXIpZ8VM6d7bR0ra+HbvKTsC0+C2cGkVPIOJhVG7El+4VtcKqPEu6Vx6jvmnxW8bCrVTejvy2vFtYDCI5TIt/cZrUd5FaRDlZqtPKeJTfuzMQgRPH6KNjVvyW6LhDpNwsqyTPFqS/7z6ziouuTo1dXYiWbXtet/iditmIf2FBltPzKOmKXQ3z5PeQFlxEfO1N5vATT9ssU3IgvnT4z1OlaSIpP4/Bw3xXR8J9eNFjJY4QtTxCiH9xWiVbXd9uKa8lzHd1rNIz1Al6mBXfctRB8v2YFT8l2/LnoEGsw7T4iAK9mBbfKiccVNWLhTxKMC2+l0pIyde9WCDUcOZJWBLdY5fSdMS/47FyTsNSY61hXnxvWw53E2V+wbz4d7xW0irepPcU7VNyIv7qT+eAfVyI/wYNoQ/P0T4lw0cI5mBNfj/Rys5VxJdu5gYZXqVPyZn4KfmurFnkAoP3cnR9cxzbUcd7X76Eu4h/p/T92xze9pReeLwnDVyLnyOSCLV7jRrtUwoivuTTPKefTd9Ky9MtmvQpBRE/pXy3pySHl/MuU2r/XlcUQt60NOK3fF50tkAt6dQ+GHf/P70c2iLsjY98iTB3nZVfH6z9XY3Iwl+ELwANWWbLL7m+lwNpV0FB3Oj9HtSK7+v2zkojex4KpYK0fzxD/paPSmun7R0KSUjr6M2IgD0jRQjfBoXVyOwGsLKBRYZCG0BzFOX0L7x4gwKcRM+7QelvQB8KeDJ0Xc6EQl4Ew44QHq9LoAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwA5/AYVOaB265n58AAAAAElFTkSuQmCC">
+    <div class="ct"><b>✉️ Post lesen.</b> Wenn ich dir etwas geschickt habe, zeige ich es dir.
+      Drücke <b>unten (OK)</b> zum Öffnen und <b>oben (WEITER)</b> zum Weiterblättern.</div>
+  </div>
+  <div class="step">
+    <img class="face sm" src="data:image/png;base64,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">
+    <div class="ct"><b>⭐ Aufgaben schaffen.</b> Manchmal gebe ich dir eine kleine Aufgabe.
+      Hast du sie geschafft? Dann drücke <b>„Fertig"</b> — und du bekommst einen <b>Stern!</b></div>
+  </div>
+  <div class="step">
+    <img class="face sm" src="data:image/png;base64,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">
+    <div class="ct"><b>💬 Mir antworten.</b> Du kannst mir auch etwas zurückschicken!
+      Blättere mit <b>WEITER</b> zu einem Spruch und drücke <b>SENDEN</b>.</div>
+  </div>
+
+  <div class="card red" style="margin-top:5mm">
+    <h2 style="margin-bottom:8pt">Damit es mir gut geht ❤️</h2>
+    <ul class="simple">
+      <li>🔋 Ist mein Bauch fast leer? Sag <b>Papa</b> Bescheid — er gibt mir Strom.</li>
+      <li>😴 Wenn nichts zu tun ist, schlafe ich, um <b>Kraft zu sparen</b>. Ein Knopfdruck weckt mich.</li>
+      <li>🤗 Trag mich <b>vorsichtig</b> und sei lieb zu mir.</li>
+    </ul>
+  </div>
+
+  <div class="row" style="margin-top:5mm">
+    <img class="face sm" src="data:image/png;base64,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">
+    <div class="ct big">Bis gleich, Max! Ich hab dich lieb. 💚<br><b>Dein Lumbi</b></div>
+  </div>
+  <div class="foot">🎄 Wichtel-Post für Max · gebaut mit ganz viel Wichtel-Zauber 🎄</div>
+</div>
+
+</body></html>
