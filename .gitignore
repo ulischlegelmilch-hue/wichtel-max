@@ -6,7 +6,8 @@ firmware/.pio/
 firmware/src/config.h
 .vscode/
 .DS_Store
-backend/firmware/firmware.bin
+# backend/firmware/firmware.bin  -> ABSICHTLICH mit-committet, damit Render die
+# OTA-Datei ausliefert und sich das Gerät ohne Kabel selbst updaten kann.
 
 # --- Flutter/Dart Build-Müll (app/) – NICHT hochladen (mehrere hundert MB) ---
 app/build/

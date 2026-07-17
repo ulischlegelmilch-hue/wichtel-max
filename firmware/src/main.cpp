@@ -45,7 +45,7 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      10
+#define FW_VERSION      11
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
@@ -72,7 +72,8 @@
 #define IDLE_SLEEP_MS   180000 // ms ohne Tastendruck -> automatisch schlafen (3 Minuten)
 #define LONGPRESS_MS    1500  // ms PWR halten = weglegen/schlafen (jeder Knopf weckt wieder)
 #define ARCHIVE_MAX     15    // so viele Nachrichten am Gerät durchblätterbar
-#define STORE_TEXT_MAX  800   // pro Nachricht max. Zeichen im Gerätespeicher
+#define STORE_TEXT_MAX  2000  // pro Nachricht max. Zeichen im Gerätespeicher (war 800 -> lange Nachrichten wurden gekappt)
+#define MAX_LINES       200   // max. umbrochene Zeilen einer Nachricht (~50 Seiten; war 80 = nur 20 Seiten)
 #define TASK_MAX        10    // so viele offene Aufgaben gleichzeitig
 #define DONE_SHOW_MS    2500  // wie lange das "Erledigt"-Gesicht stehen bleibt
 
@@ -242,7 +243,7 @@ uint32_t hashMsg(const String &text, const String &from) {
 
 // ---- Layout-Helfer -------------------------------------------------------
 struct Range { int s, e; };
-static Range lines[80]; static bool hyph[80]; static int nLines = 0;
+static Range lines[MAX_LINES]; static bool hyph[MAX_LINES]; static int nLines = 0;
 
 int marginPx() { return display.height() >= 300 ? 8 : 6; }
 
@@ -266,7 +267,7 @@ void wrapWith(const GFXfont *f, int maxW) {
   display.setFont(f);
   nLines = 0;
   int L = gBase.length(), i = 0;
-  while (i < L && nLines < 80) {
+  while (i < L && nLines < MAX_LINES) {
     while (i < L && gBase[i] == ' ') i++;             // führende Leerzeichen weg
     if (i >= L) break;
     int start = i, j = i, lastSpace = -1;
@@ -598,6 +599,10 @@ void epdBegin() {
   SPI.begin(EPD_SCK, -1, EPD_MOSI, EPD_CS);
   display.init(115200, true, 2, false);
   display.setRotation(EPD_ROTATION);
+  // WICHTIG: Adafruit-GFX bricht Text sonst automatisch am rechten Rand um und malt
+  // den Rest über die NÄCHSTE Zeile (Ursache der "Hebte ich"-Überlappung). Wir setzen
+  // jede Zeile selbst mittig -> Auto-Umbruch muss AUS.
+  display.setTextWrap(false);
 }
 void epdEnd() { display.hibernate(); epdPowerOff(); }
 
