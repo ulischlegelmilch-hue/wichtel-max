@@ -45,7 +45,7 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      12
+#define FW_VERSION      13
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
@@ -198,12 +198,12 @@ int curMsg = 0, curPage = 0;
 
 // ---- Textaufbereitung (UTF-8 -> ASCII-Basis + Umlaut-Flags) --------------
 static String gBase;
-static bool   gUm[1024];
+static bool   gUm[2048];   // muss >= buildBase-Cap sein (indexiert per gBase.length())
 
 void buildBase(const String &t) {
   gBase = ""; memset(gUm, 0, sizeof(gUm));
   int len = t.length();
-  for (int i = 0; i < len && gBase.length() < 1000; ) {
+  for (int i = 0; i < len && gBase.length() < STORE_TEXT_MAX; ) {  // war fix 1000 -> kappte lange Nachrichten
     uint8_t c = (uint8_t)t[i];
     if (c < 0x80) { gBase += (char)c; i += 1; }
     else if (c == 0xC3 && i + 1 < len) {
