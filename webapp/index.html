@@ -295,8 +295,10 @@ async function refresh() {
     const on = s.deviceOnline;
     $("dot").className = "dot" + (on ? " on" : "");
     let st = on ? "Gerät online" : "Gerät offline";
-    if (typeof s.deviceBatt === "number" && s.deviceBatt >= 0)
+    if (typeof s.deviceBatt === "number" && s.deviceBatt >= 0) {
       st += (s.deviceBatt < 15 ? " · ⚠️ Akku fast leer: " : " · 🔋 ") + s.deviceBatt + "%";
+      if (typeof s.deviceBattMv === "number" && s.deviceBattMv > 0) st += " (" + s.deviceBattMv + " mV)";
+    }
     if (s.deviceFw) st += " · Firmware v" + s.deviceFw;
     if (s.ota && s.ota.hasBin && s.ota.version > (s.deviceFw || 0))
       st += " · Update v" + s.ota.version + " bereit";

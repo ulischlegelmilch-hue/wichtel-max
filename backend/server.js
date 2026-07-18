@@ -30,6 +30,33 @@ const STATE_DIR = process.env.STATE_DIR || __dirname;
 try { mkdirSync(STATE_DIR, { recursive: true }); } catch { /* egal */ }
 const STATE_FILE = join(STATE_DIR, "state.json");
 
+// ---- Dauerhafter Speicher: Upstash Redis (überlebt Render-Redeploys) ------
+// Render-Gratis wischt die lokale Datei bei jedem Deploy. Sind die beiden
+// Env-Variablen gesetzt (im Render-Dashboard), wird der GESAMTE Zustand
+// zusätzlich in Upstash gespeichert und beim Start von dort geladen -> nichts
+// geht bei Updates verloren. Ohne die Variablen läuft alles wie bisher (Datei).
+const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const useRedis    = !!(REDIS_URL && REDIS_TOKEN);
+const REDIS_KEY   = `wichtel:${DEVICE_ID}:state`;
+async function redisCmd(cmd) {                         // cmd = z.B. ["GET", key]
+  const r = await fetch(REDIS_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${REDIS_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify(cmd),
+  });
+  if (!r.ok) throw new Error("Upstash HTTP " + r.status);
+  return (await r.json()).result;
+}
+async function redisLoadState() {
+  try { const v = await redisCmd(["GET", REDIS_KEY]); return v ? JSON.parse(v) : null; }
+  catch (e) { console.error("Upstash-Laden fehlgeschlagen:", e.message); return null; }
+}
+function redisSaveState() {                            // fire-and-forget (blockiert die API nicht)
+  if (!useRedis) return;
+  redisCmd(["SET", REDIS_KEY, JSON.stringify(state)]).catch(e => console.error("Upstash-Speichern:", e.message));
+}
+
 // ---- OTA / Firmware-Fernupdate ------------------------------------------
 // Neue Firmware verteilen: firmware.bin nach backend/firmware/ legen und die
 // Version in manifest.json hochzählen (oder das Skript publish-firmware.mjs
@@ -58,6 +85,14 @@ let state = { last: null, history: [], tasks: [], nextTaskId: 1 };
 if (existsSync(STATE_FILE)) {
   try { state = JSON.parse(readFileSync(STATE_FILE, "utf8")); } catch { /* ignore */ }
 }
+// Upstash hat Vorrang (überlebt Redeploys). Ohne Creds bleibt es beim Datei-Zustand.
+if (useRedis) {
+  const loaded = await redisLoadState();
+  if (loaded) { state = loaded; console.log("Zustand aus Upstash geladen"); }
+  else console.log("Upstash leer/nicht erreichbar – starte mit vorhandenem/leerem Zustand");
+} else {
+  console.log("Upstash nicht konfiguriert – Zustand nur in Datei (auf Render-Gratis flüchtig)");
+}
 // Migration älterer state.json ohne Aufgaben-Felder
 if (!Array.isArray(state.tasks)) state.tasks = [];
 if (typeof state.nextTaskId !== "number") state.nextTaskId = 1;
@@ -79,9 +114,11 @@ for (const t of state.tasks) {
 }
 function saveState() {
   try { writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch { /* ignore */ }
+  redisSaveState();    // zusätzlich dauerhaft in Upstash (falls konfiguriert)
 }
 let deviceFw = 0;      // vom Gerät gemeldete Firmware-Version
 let deviceBatt = -1;   // vom Gerät gemeldeter Akkustand in % (-1 = unbekannt)
+let deviceBattMv = -1; // vom Gerät gemeldete Batteriespannung in mV (Diagnose)
 let deviceRssi = 0;    // WLAN-Signalstärke (dBm), zuletzt gemeldet
 let lastSeen = 0;      // ms-Zeitstempel, wann sich das Gerät zuletzt gemeldet hat
 
@@ -91,11 +128,12 @@ let lastSeen = 0;      // ms-Zeitstempel, wann sich das Gerät zuletzt gemeldet 
 // der bei einem Deep-Sleep-Gerät fast immer "offline" zeigen würde.
 function onlineTtlMs() { return (Number(state.config?.pollMin || 30) * 2 + 2) * 60000; }
 function isOnline() { return lastSeen > 0 && (Date.now() - lastSeen) < onlineTtlMs(); }
-function markDeviceSeen({ fw, batt, rssi } = {}) {
+function markDeviceSeen({ fw, batt, rssi, mv } = {}) {
   lastSeen = Date.now();
   if (Number.isFinite(fw))   deviceFw = fw;
   if (Number.isFinite(batt)) deviceBatt = batt;
   if (Number.isFinite(rssi)) deviceRssi = rssi;
+  if (Number.isFinite(mv))   deviceBattMv = mv;
 }
 
 // ---- Optional: MQTT-Broker + interner Client (nur ENABLE_MQTT) -----------
@@ -278,7 +316,7 @@ app.get("/api/state", (_req, res) => {
   res.json({ last: state.last, history: state.history, tasks: annotateTasks(), stars: state.stars,
              replies: state.replies, deviceOnline: isOnline(),
              deviceLastSeen: lastSeen || null, deviceRssi,
-             deviceFw, deviceBatt, ota: otaInfo(),
+             deviceFw, deviceBatt, deviceBattMv, ota: otaInfo(),
              config: state.config, remoteLog: state.remote.log, queueLen: state.remote.queue.length,
              photos: photoMeta(),
              deviceId: DEVICE_ID });
@@ -318,6 +356,7 @@ app.post("/api/heartbeat", (req, res) => {
     fw:   Number.isFinite(+b.fw)   ? +b.fw   : undefined,
     batt: Number.isFinite(+b.batt) ? +b.batt : undefined,
     rssi: Number.isFinite(+b.rssi) ? +b.rssi : undefined,
+    mv:   Number.isFinite(+b.mv)   ? +b.mv   : undefined,
   });
   res.json({ ok: true });
 });

@@ -46,7 +46,7 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      15
+#define FW_VERSION      16
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
@@ -200,6 +200,8 @@ RTC_DATA_ATTR uint32_t navSig        = 0;    // Signatur des Archivs (zum Fortse
 RTC_DATA_ATTR uint32_t lastTaskSig   = 0;    // Signatur der offenen Aufgaben (neue erkennen)
 RTC_DATA_ATTR uint32_t lastReadTs    = 0;    // ts der zuletzt gelesenen Nachricht (alles <= gilt als gelesen)
 RTC_DATA_ATTR int      retryCount    = 0;    // wie oft in Folge schon kurz nachgefasst (0 = letzter Poll war ok)
+RTC_DATA_ATTR int      rtcLastBattMv = 0;    // Batteriespannung beim letzten Aufwachen (Lade-Trend)
+RTC_DATA_ATTR bool     rtcWasCharging= false;// zuletzt erkannter Ladezustand (Hysterese)
 
 // Fern-Konfiguration (per Backend änderbar, in NVS gesichert, über Schlaf gemerkt)
 RTC_DATA_ATTR int  cfgPollMin    = POLL_MINUTES;
@@ -403,11 +405,15 @@ const GFXfont *TITLE_FONTS[] = { &FreeSansBold18pt7b, &FreeSansBold12pt7b, &Free
 bool isNightNow();   // (weiter unten definiert – für den Schlaf-Ruhebildschirm)
 
 // ---- Batterie ------------------------------------------------------------
-// Ab welcher Zellspannung gilt das Gerät als "wird geladen". Die Platine hat
-// keinen eigenen Lade-Status-Pin, daher Heuristik: hängt es am USB/Ladegerät,
-// hält der Laderegler die Zelle nahe 4,2 V (im Akkubetrieb sackt sie darunter).
-// Falls die Ladeanzeige am echten Gerät zu früh/zu spät kommt: Wert justieren.
+// Ab dieser Zellspannung gilt das Gerät als (fast) voll -> immer "lädt/voll".
 #define CHARGE_DETECT_MV 4180
+// Lade-Erkennung per TREND (die Platine hat KEINEN Lade-Status-Pin): steigt die
+// Spannung seit dem letzten Aufwachen um mind. CHARGE_RISE_MV, wird geladen;
+// fällt sie um CHARGE_FALL_MV, nicht. Dazwischen (Messrauschen) bleibt der alte
+// Zustand. So wird Laden bei JEDEM Ladestand erkannt (nicht erst nahe voll) -
+// braucht aber einen Aufwach-Zyklus (bis zu POLL_MINUTES), um es zu bemerken.
+#define CHARGE_RISE_MV 30
+#define CHARGE_FALL_MV 30
 // Unter diesem Ladestand (%) wird gewarnt ("Akku laden!").
 #define LOW_BATT_PCT 15
 // Warndreieck mit Ausrufezeichen, linke-obere Ecke (x,y), Seitenlänge h.
@@ -420,12 +426,16 @@ void drawWarnIcon(int x, int y, int h) {
   display.fillRect(cx - 1, y + h*8/10, 2, 2, GxEPD_BLACK);
 }
 #if HAS_BATTERY
-int batteryMilliVolts() {
+int readBattMv() {
   analogReadResolution(12);
   long sum = 0; const int N = 8;
   for (int i = 0; i < N; i++) { sum += analogReadMilliVolts(BATT_ADC_PIN); delay(2); }
   return (int)((sum / (float)N) * BATT_DIVIDER);           // Batteriespannung in mV
 }
+// Ein Snapshot pro Aufwachen (früh, VOR dem WLAN gemessen -> stabil, ohne
+// Sende-Lastsprünge). Alle Anzeigen/Meldungen dieses Aufwachens nutzen ihn.
+int gBattMv = -1;
+int batteryMilliVolts() { return gBattMv >= 0 ? gBattMv : readBattMv(); }
 // Ladestand (%). NICHT mehr linear 3,30-4,20 V: ein frisch geladener LiPo ruht
 // nach dem Abstecken bei ~4,10-4,15 V (nicht 4,20), und der ESP32-S3-ADC misst
 // oben herum leicht zu niedrig -> mit dem alten Modell waren 100 % unerreichbar
@@ -448,8 +458,20 @@ int batteryPercent() {
   int p = (mv - BATT_EMPTY_MV) * 100 / (BATT_FULL_MV - BATT_EMPTY_MV);
   return p < 0 ? 0 : p > 100 ? 100 : p;
 }
-// Heuristische Lade-Erkennung (siehe CHARGE_DETECT_MV oben).
-bool isCharging() { return batteryMilliVolts() >= CHARGE_DETECT_MV; }
+// Ladezustand dieses Aufwachens (einmal in setup via updateChargeState berechnet).
+bool gCharging = false;
+bool isCharging() { return gCharging; }
+// Trend-Auswertung: vergleicht den aktuellen Snapshot mit dem letzten Aufwachen.
+void updateChargeState() {
+  int mv = batteryMilliVolts();
+  bool charging;
+  if (mv >= CHARGE_DETECT_MV)             charging = true;             // (fast) voll / CV-Phase
+  else if (rtcLastBattMv <= 0)            charging = (mv >= CHARGE_DETECT_MV); // erster Wert -> keine Trend-Aussage
+  else if (mv >= rtcLastBattMv + CHARGE_RISE_MV) charging = true;      // Spannung deutlich gestiegen
+  else if (mv <= rtcLastBattMv - CHARGE_FALL_MV) charging = false;     // deutlich gefallen
+  else                                    charging = rtcWasCharging;   // im Rauschen -> alter Zustand
+  rtcLastBattMv = mv; rtcWasCharging = charging; gCharging = charging;
+}
 // kleines Batteriesymbol (Rahmen + Füllung + Pluspol)
 void drawBatteryIcon(int x, int y, int pct) {
   const int w = 22, h = 11;
@@ -465,9 +487,13 @@ void drawBoltIcon(int x, int y, int h) {
   display.fillTriangle(x,     y + h*4/10, x + w,     y + h,      x + w/2, y + h*4/10, GxEPD_BLACK);
 }
 #else
+int gBattMv = -1;
+int readBattMv() { return -1; }
 int batteryMilliVolts() { return -1; }
 int batteryPercent() { return -1; }
+bool gCharging = false;
 bool isCharging() { return false; }
+void updateChargeState() {}
 void drawBoltIcon(int, int, int) {}
 #endif
 
@@ -1001,6 +1027,7 @@ bool httpHeartbeat(bool online) {
   o["online"] = online;
   o["fw"]     = FW_VERSION;
   o["batt"]   = batteryPercent();
+  o["mv"]     = batteryMilliVolts();   // Rohspannung zur Diagnose ("hängt bei X%")
   o["rssi"]   = WiFi.RSSI();
   String pl; serializeJson(o, pl);
   http.setTimeout(HTTP_TIMEOUT);
@@ -2183,6 +2210,10 @@ void setup() {
   if (!cfgLoaded) loadConfigNVS();     // Fern-Konfiguration (Poll/Nacht/Vol) aus NVS
   loadLastRead();                      // "gelesen"-Merker
   gFsOk = LittleFS.begin(true);        // Fotospeicher mounten (true = bei Bedarf formatieren)
+#if HAS_BATTERY
+  gBattMv = readBattMv();              // Batterie-Snapshot VOR dem WLAN (stabil, ohne Sende-Last)
+  updateChargeState();                 // Lade-Trend gegen letztes Aufwachen auswerten
+#endif
 
 #if HAS_POWER_LATCH
   latchPowerOn();
