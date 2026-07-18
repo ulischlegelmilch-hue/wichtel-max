@@ -68,6 +68,10 @@ if (!state.config) state.config = { pollMin: 30, nightStart: 22, nightEnd: 6, vo
 if (typeof state.stars !== "number") state.stars = 0;
 // Antworten von Max (Zwei-Wege)
 if (!Array.isArray(state.replies)) state.replies = [];
+// Fotos: als 1-Bit-Bitmap (200x200, base64) hinterlegt. Das Gerät lädt sie in
+// LittleFS (übersteht OTA). Hier nur zum Verteilen gehalten.
+if (!Array.isArray(state.photos)) state.photos = [];
+if (typeof state.nextPhotoId !== "number") state.nextPhotoId = 1;
 // Aufgaben-Feld für Zeitraum (once/day/week/month) nachrüsten
 for (const t of state.tasks) {
   if (t.scope === undefined) t.scope = "once";
@@ -225,6 +229,28 @@ function pushReply(text) {
   state.replies = state.replies.slice(0, 30);
   saveState();
 }
+// ---- Fotos ---------------------------------------------------------------
+const PHOTO_MAX = 20;
+const PHOTO_BYTES = 200 * 200 / 8;   // 5000 (200x200, 1 Bit/Pixel)
+function photoMeta() { return state.photos.map(p => ({ id: p.id, name: p.name, ts: p.ts })); }
+function addPhoto(name, dataB64) {
+  const buf = Buffer.from(dataB64, "base64");
+  if (buf.length !== PHOTO_BYTES) return null;        // nur exakt passende 200x200-1-Bit-Bilder
+  const id = state.nextPhotoId++;
+  const p = { id, name: (name || ("Foto " + id)).toString().slice(0, 40), ts: Date.now(),
+              data: buf.toString("base64") };
+  state.photos.unshift(p);
+  state.photos = state.photos.slice(0, PHOTO_MAX);
+  saveState();
+  return { id: p.id, name: p.name, ts: p.ts };
+}
+function removePhoto(id) {
+  const n = state.photos.length;
+  state.photos = state.photos.filter(p => p.id !== id);
+  if (state.photos.length !== n) { saveState(); return true; }
+  return false;
+}
+
 function pushLog(text) {
   const ts = new Date().toLocaleString("de-DE");
   for (const line of String(text).split("\n")) {
@@ -254,7 +280,34 @@ app.get("/api/state", (_req, res) => {
              deviceLastSeen: lastSeen || null, deviceRssi,
              deviceFw, deviceBatt, ota: otaInfo(),
              config: state.config, remoteLog: state.remote.log, queueLen: state.remote.queue.length,
+             photos: photoMeta(),
              deviceId: DEVICE_ID });
+});
+
+// ---- Foto-API ------------------------------------------------------------
+// Papa lädt ein Foto hoch (im Browser bereits auf 200x200 1-Bit gedithert und
+// base64-gepackt). Das Gerät holt die Liste über /api/state und lädt neue Bilder
+// binär über /api/photo/:id/bin in seinen dauerhaften Speicher.
+app.get("/api/photos", (_req, res) => res.json(photoMeta()));
+app.post("/api/photo", (req, res) => {
+  const name = (req.body?.name || "").toString();
+  const data = (req.body?.data || "").toString();
+  if (!data) return res.status(400).json({ error: "data fehlt" });
+  const p = addPhoto(name, data);
+  if (!p) return res.status(400).json({ error: `Bilddaten muessen genau ${PHOTO_BYTES} Byte (200x200, 1 Bit) sein` });
+  res.json({ ok: true, photo: p });
+});
+app.get("/api/photo/:id/bin", (req, res) => {
+  const p = state.photos.find(x => x.id === Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Foto nicht gefunden" });
+  const buf = Buffer.from(p.data, "base64");
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Length", buf.length);
+  res.send(buf);
+});
+app.delete("/api/photo/:id", (req, res) => {
+  if (!removePhoto(Number(req.params.id))) return res.status(404).json({ error: "Foto nicht gefunden" });
+  res.json({ ok: true });
 });
 
 // ---- Heartbeat: das Gerät meldet sich beim Aufwachen (Online-Status) ------

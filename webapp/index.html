@@ -115,6 +115,24 @@
     </div>
 
     <div class="card">
+      <b>📷 Fotos für Max</b>
+      <div class="sub" style="text-align:left;margin:4px 0 10px">Bild auswählen – es wird auf 200×200 in
+        Schwarz-Weiß umgerechnet (genau so sieht Max es am Gerät) und aufs Gerät geladen.
+        <b>Fotos bleiben auch nach Updates erhalten.</b></div>
+      <div class="row"><input id="photoFile" type="file" accept="image/*" style="flex:1" /></div>
+      <div class="row" style="margin-top:10px;align-items:flex-start;gap:12px">
+        <canvas id="photoPrev" width="200" height="200"
+          style="width:160px;height:160px;border:1px solid var(--line);border-radius:8px;background:#fff;image-rendering:pixelated"></canvas>
+        <div style="flex:1;min-width:140px">
+          <input id="photoName" placeholder="Name (optional)" style="width:100%" />
+          <button class="send" id="photoSend" style="margin-top:10px" disabled>📤 Aufs Gerät laden</button>
+          <div class="sub" style="text-align:left;margin-top:6px">Die Vorschau zeigt das fertige Gerätebild.</div>
+        </div>
+      </div>
+      <div id="photoList" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
       <b>🛰️ Fernsteuerung (Gerät)</b>
       <div class="sub" style="text-align:left;margin:4px 0 10px">Befehle & Einstellungen werden
         beim nächsten Aufwachen des Geräts angewendet (oder sofort, wenn Max einen Knopf drückt).
@@ -290,6 +308,7 @@ async function refresh() {
     }
     renderHistory(s.history);
     renderTasks(s.tasks);
+    renderPhotos(s.photos);
     $("starCount").textContent = "⭐ " + (s.stars || 0);
     renderRemote(s);
   } catch {
@@ -400,8 +419,94 @@ async function resetAll() {
   else toast("Fehler beim Zurücksetzen");
 }
 
+// ---- Fotos: im Browser auf 200x200 1-Bit dithern (Floyd-Steinberg) --------
+let photoBits = null;   // Uint8Array(5000), MSB-first, 1 = schwarz
+
+function ditherToCanvas(img) {
+  const cv = $("photoPrev"), ctx = cv.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 200, 200);
+  const s = Math.min(200 / img.width, 200 / img.height);       // "contain": ganzes Bild, weißer Rand
+  const w = Math.round(img.width * s), h = Math.round(img.height * s);
+  ctx.drawImage(img, (200 - w) / 2, (200 - h) / 2, w, h);
+  const im = ctx.getImageData(0, 0, 200, 200), d = im.data;
+  const g = new Float32Array(200 * 200);
+  for (let i = 0; i < 200 * 200; i++)
+    g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  for (let y = 0; y < 200; y++) for (let x = 0; x < 200; x++) {   // Floyd-Steinberg
+    const i = y * 200 + x, old = g[i], nw = old < 128 ? 0 : 255, err = old - nw;
+    g[i] = nw;
+    if (x + 1 < 200) g[i + 1] += err * 7 / 16;
+    if (y + 1 < 200) {
+      if (x > 0)       g[i + 199] += err * 3 / 16;
+      g[i + 200] += err * 5 / 16;
+      if (x + 1 < 200) g[i + 201] += err * 1 / 16;
+    }
+  }
+  const bits = new Uint8Array(200 * 200 / 8);
+  for (let i = 0; i < 200 * 200; i++) {
+    const black = g[i] < 128, v = black ? 0 : 255;
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+    if (black) bits[i >> 3] |= (0x80 >> (i & 7));               // MSB-first, 1 = schwarz
+  }
+  ctx.putImageData(im, 0, 0);
+  photoBits = bits;
+  $("photoSend").disabled = false;
+}
+
+function bitsToB64(bits) {
+  let s = ""; for (let i = 0; i < bits.length; i++) s += String.fromCharCode(bits[i]);
+  return btoa(s);
+}
+
+async function sendPhoto() {
+  if (!photoBits) return;
+  const r = await fetch("/api/photo", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: $("photoName").value.trim(), data: bitsToB64(photoBits) })
+  });
+  if (r.ok) {
+    toast("📷 Foto aufs Gerät geladen");
+    $("photoName").value = ""; $("photoFile").value = ""; photoBits = null;
+    $("photoSend").disabled = true;
+    const ctx = $("photoPrev").getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 200, 200);
+    refresh();
+  } else {
+    const e = await r.json().catch(() => ({})); toast("Fehler: " + (e.error || r.status));
+  }
+}
+
+function renderPhotos(photos) {
+  const box = $("photoList"); if (!box) return;
+  if (!photos || !photos.length) {
+    box.innerHTML = '<div class="sub" style="text-align:left">Noch keine Fotos.</div>'; return;
+  }
+  box.innerHTML = '<b style="font-size:14px">Fotos (' + photos.length + ')</b>';
+  photos.forEach(p => {
+    const row = document.createElement("div"); row.className = "row"; row.style.marginTop = "6px";
+    const nm = document.createElement("span"); nm.style.flex = "1";
+    nm.textContent = p.name || ("Foto " + p.id);
+    const del = document.createElement("button"); del.textContent = "löschen";
+    del.style.background = "var(--red)"; del.onclick = () => deletePhoto(p.id);
+    row.appendChild(nm); row.appendChild(del); box.appendChild(row);
+  });
+}
+
+async function deletePhoto(id) {
+  if (!confirm("Foto aus der Liste löschen? (Bilder, die schon auf dem Gerät sind, bleiben dort.)")) return;
+  const r = await fetch("/api/photo/" + id, { method: "DELETE" });
+  if (r.ok) { toast("Foto gelöscht"); refresh(); }
+}
+
 renderPresets();
 renderCmdPresets();
+$("photoFile").addEventListener("change", e => {
+  const f = e.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = () => ditherToCanvas(img);
+  img.onerror = () => toast("Bild konnte nicht geladen werden");
+  img.src = URL.createObjectURL(f);
+});
+$("photoSend").onclick = sendPhoto;
 $("send").onclick = send;
 $("resetAll").onclick = resetAll;
 $("addTask").onclick = createTask;

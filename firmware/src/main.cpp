@@ -25,6 +25,7 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <LittleFS.h>     // Fotospeicher (eigene Flash-Partition, übersteht OTA)
 #include <Wire.h>
 #include <SPI.h>
 #include <GxEPD2_BW.h>
@@ -45,7 +46,7 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      14
+#define FW_VERSION      15
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
@@ -166,6 +167,23 @@ String apiBase() {
 struct Msg { String text; String from; uint32_t ts; };
 Msg  archive[ARCHIVE_MAX];
 int  archiveN = 0;
+
+// ---- Fotos ---------------------------------------------------------------
+// Bilder liegen als 1-Bit-Bitmap (200x200, MSB-first, 1=schwarz - gleiches
+// Format wie die Wichtelgesichter) in LittleFS unter /p<id>.bin. LittleFS liegt
+// auf der spiffs-Partition, die ein OTA-Update NICHT überschreibt -> Fotos
+// bleiben nach Updates erhalten (Uli-Wunsch). Synchronisierung ist rein additiv:
+// neue Cloud-Fotos werden geladen, nie anhand der Cloud gelöscht (ein Cloud-Reset
+// beim Deploy wischt also NICHT die Bilder auf dem Gerät).
+#define PHOTO_W 200
+#define PHOTO_H 200
+#define PHOTO_BYTES (PHOTO_W * PHOTO_H / 8)   // 5000
+#define PHOTO_MAX 20                          // Speicher-Deckel (20*5KB = 100KB << 1,5MB)
+#define PHOTO_SYNC_PER_WAKE 3                 // pro Aufwachen höchstens so viele laden (Zeit/Signal)
+bool gFsOk = false;                           // LittleFS gemountet?
+int  gCloudPhotoIds[PHOTO_MAX]; int gCloudPhotoN = 0;   // IDs, die die Cloud kennt (aus /api/state)
+static uint8_t gPhotoBuf[PHOTO_BYTES];        // Lade-/Zeichenpuffer (ein Bild)
+static inline String photoPath(int id) { return String("/p") + id + ".bin"; }
 
 // ---- Offene Aufgaben -----------------------------------------------------
 // scope: 0=einmalig, 1=heute, 2=diese Woche, 3=diesen Monat
@@ -408,9 +426,26 @@ int batteryMilliVolts() {
   for (int i = 0; i < N; i++) { sum += analogReadMilliVolts(BATT_ADC_PIN); delay(2); }
   return (int)((sum / (float)N) * BATT_DIVIDER);           // Batteriespannung in mV
 }
+// Ladestand (%). NICHT mehr linear 3,30-4,20 V: ein frisch geladener LiPo ruht
+// nach dem Abstecken bei ~4,10-4,15 V (nicht 4,20), und der ESP32-S3-ADC misst
+// oben herum leicht zu niedrig -> mit dem alten Modell waren 100 % unerreichbar
+// ("laedt nicht ganz voll"). Jetzt: Ruhespannungs-Anker BATT_FULL_MV = 100 %
+// plus eine typische 1S-LiPo-Entladekurve fuer die Mitte.
+//   Kalibrieren: Terminal "status" zeigt die mV. Voll geladen ablesen und
+//   BATT_FULL_MV auf diesen Wert setzen; leer (Gerät schaltet ab) -> BATT_EMPTY_MV.
+#ifndef BATT_FULL_MV
+#define BATT_FULL_MV  4150   // >= dieser Wert = 100 %
+#endif
+#ifndef BATT_EMPTY_MV
+#define BATT_EMPTY_MV 3300   // <= dieser Wert = 0 %
+#endif
 int batteryPercent() {
-  float v = batteryMilliVolts() / 1000.0f;
-  int p = (int)((v - 3.30f) / (4.20f - 3.30f) * 100.0f);   // grobe LiPo-Kennlinie
+  int mv = batteryMilliVolts();
+  if (mv >= BATT_FULL_MV)  return 100;
+  if (mv <= BATT_EMPTY_MV) return 0;
+  // Linear zwischen leer und Ruhespannungs-Voll (wie bisher, nur oberer Anker
+  // realistisch). Feinere LiPo-Kurve erst, wenn echte mV vom Board vorliegen.
+  int p = (mv - BATT_EMPTY_MV) * 100 / (BATT_FULL_MV - BATT_EMPTY_MV);
   return p < 0 ? 0 : p > 100 ? 100 : p;
 }
 // Heuristische Lade-Erkennung (siehe CHARGE_DETECT_MV oben).
@@ -430,6 +465,7 @@ void drawBoltIcon(int x, int y, int h) {
   display.fillTriangle(x,     y + h*4/10, x + w,     y + h,      x + w/2, y + h*4/10, GxEPD_BLACK);
 }
 #else
+int batteryMilliVolts() { return -1; }
 int batteryPercent() { return -1; }
 bool isCharging() { return false; }
 void drawBoltIcon(int, int, int) {}
@@ -843,6 +879,15 @@ bool httpFetchState() {
     tasks[tasksN].scope = !strcmp(sc, "day") ? 1 : !strcmp(sc, "week") ? 2 : !strcmp(sc, "month") ? 3 : 0;
     tasksN++;
   }
+
+  // ---- Foto-IDs (Metadaten, ohne Bilddaten) merken -> syncPhotos lädt neue ----
+  gCloudPhotoN = 0;
+  JsonArray ph = doc["photos"].as<JsonArray>();
+  for (JsonObject p : ph) {
+    if (gCloudPhotoN >= PHOTO_MAX) break;
+    int id = (int)(p["id"] | 0);
+    if (id > 0) gCloudPhotoIds[gCloudPhotoN++] = id;
+  }
   return archiveN > 0;
 }
 
@@ -1159,15 +1204,16 @@ void runIdleInteractive() {
 // Ausgelöst wird das Löschen mit dem UNTEREN Knopf - deshalb liegt hier unten
 // ABBRECHEN. Wer reflexhaft zweimal unten tippt, bricht also ab, statt zu löschen.
 // "Ja, löschen" verlangt bewusst den ANDEREN Knopf (oben).
-bool confirmDelete() {
+// Ein einzelner Bestätigungs-Screen: oben = JA (true), unten = ABBRECHEN (false).
+static bool confirmStep(const char* l1, const char* l2, const char* yes) {
   const int W = display.width(), H = display.height();
   const int maxW = W - 2 * marginPx();
   display.setFullWindow(); display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
-    drawCenteredFit("Wirklich", H / 2 - 12, TITLE_FONTS, 3, maxW);
-    drawCenteredFit("loeschen?", H / 2 + 18, TITLE_FONTS, 3, maxW);
-    drawButtonLabels("JA, WEG", "ABBRECHEN");
+    drawCenteredFit(l1, H / 2 - 12, TITLE_FONTS, 3, maxW);
+    drawCenteredFit(l2, H / 2 + 18, TITLE_FONTS, 3, maxW);
+    drawButtonLabels(yes, "ABBRECHEN");
   } while (display.nextPage());
   waitButtonsReleased();
   unsigned long t0 = millis();
@@ -1177,12 +1223,20 @@ bool confirmDelete() {
   int bootPrev = HIGH, pwrPrev = HIGH;
   for (;;) {
     int b = digitalRead(BTN_WAKE), p = digitalRead(BTN_POWER);
-    if (bootPrev == HIGH && b == LOW) return true;    // oben = JA, LOESCHEN
+    if (bootPrev == HIGH && b == LOW) return true;    // oben = JA
     if (pwrPrev == HIGH && p == LOW) return false;    // unten = ABBRECHEN (sicherer Reflex)
     bootPrev = b; pwrPrev = p;
     if (millis() - t0 > IDLE_SLEEP_MS) return false;  // Zeitablauf -> nicht löschen
     delay(15);
   }
+}
+// Zweistufige Sicherheitsabfrage vor dem Löschen (gegen versehentliches Löschen):
+// verlangt ZWEI bewusste "oben"-Drücke auf zwei verschiedenen Screens. Auf beiden
+// liegt ABBRECHEN unten - der Reflex-Knopf, mit dem gelöscht wird - also bricht ein
+// unbedachter Doppeltipp immer ab, statt zu löschen.
+bool confirmDelete() {
+  if (!confirmStep("Wirklich", "loeschen?", "JA"))     return false;
+  return confirmStep("Sicher?", "Weg ist weg!", "JA, WEG");
 }
 #endif
 
@@ -1406,12 +1460,38 @@ void renderWorking() {
   } while (display.nextPage());
 }
 
+// Ladebildschirm: ersetzt das Ruhebild, solange das Gerät am Strom hängt
+// (Uli-Wunsch). Zeigt gross den aktuellen Ladestand als Balken + Prozent.
+void renderCharging(int bpct) {
+  const int W = display.width(), H = display.height();
+  if (bpct < 0) bpct = 0; if (bpct > 100) bpct = 100;
+  display.setFullWindow(); display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    const GFXfont *tf[] = { &FreeSansBold18pt7b, &FreeSansBold12pt7b };
+    drawCenteredFit("Wird geladen", 32, tf, 2, W - 8);
+    // grosse Batterie mittig
+    int bw = W * 55 / 100, bh = H * 22 / 100, term = bw / 12;
+    int bx = (W - bw - term) / 2, by = H / 2 - bh / 2;
+    display.drawRect(bx, by, bw, bh, GxEPD_BLACK);
+    display.drawRect(bx + 1, by + 1, bw - 2, bh - 2, GxEPD_BLACK);   // dickerer Rahmen
+    display.fillRect(bx + bw, by + bh / 3, term, bh / 3, GxEPD_BLACK); // Pluspol
+    int fill = (bw - 8) * bpct / 100;
+    if (fill > 0) display.fillRect(bx + 4, by + 4, fill, bh - 8, GxEPD_BLACK);
+    // grosser Prozentwert darunter
+    const GFXfont *pf[] = { &FreeSansBold24pt7b, &FreeSansBold18pt7b };
+    drawCenteredFit(String(bpct) + " %", by + bh + 52, pf, 2, W - 8);
+  } while (display.nextPage());
+}
+
 void renderScreensaver() {
   const int W = display.width(), H = display.height();
   Mood m = (timeValid && isNightNow()) ? MOOD_SLEEP : MOOD_WAIT;
   int fx = (W - FACE_SM_W) / 2, fy = 6;
   int bpct = batteryPercent();
   bool charging = isCharging();
+  // Am Strom: statt Ruhebild den Ladebildschirm zeigen (nicht während des Abrufs).
+  if (charging && !gBusy) { renderCharging(bpct); return; }
   bool lowBatt = (bpct >= 0 && bpct < LOW_BATT_PCT && !charging);
   char tbuf[6] = "";
   if (timeValid) { struct tm t; if (getLocalTime(&t, 5)) strftime(tbuf, sizeof(tbuf), "%H:%M", &t); }
@@ -1464,14 +1544,125 @@ void renderScreensaver() {
   } while (display.nextPage());
 }
 
+// ---- Fotos: LittleFS-Liste, Download, Synchronisierung, Viewer -----------
+// Lokale Foto-IDs (Dateien /p<id>.bin) in ids[] sammeln, neueste (höchste id)
+// zuerst. Rückgabe = Anzahl.
+int listLocalPhotos(int *ids, int maxn) {
+  int n = 0;
+  if (!gFsOk) return 0;
+  File dir = LittleFS.open("/");
+  if (!dir) return 0;
+  for (File f = dir.openNextFile(); f && n < maxn; f = dir.openNextFile()) {
+    String nm = f.name();
+    int slash = nm.lastIndexOf('/'); if (slash >= 0) nm = nm.substring(slash + 1);
+    if (nm.startsWith("p") && nm.endsWith(".bin")) {
+      int id = nm.substring(1, nm.length() - 4).toInt();
+      if (id > 0) ids[n++] = id;
+    }
+  }
+  for (int i = 0; i < n; i++)                    // absteigend sortieren (neueste zuerst)
+    for (int j = i + 1; j < n; j++)
+      if (ids[j] > ids[i]) { int t = ids[i]; ids[i] = ids[j]; ids[j] = t; }
+  return n;
+}
+int localPhotoCount() { int t[PHOTO_MAX]; return listLocalPhotos(t, PHOTO_MAX); }
+
+// Ein Foto vom Backend holen (rohe 5000 Byte) und in LittleFS schreiben.
+bool downloadPhoto(int id) {
+  ApiClient net; apiClientPrep(net); HTTPClient http;
+  String url = apiBase() + "/api/photo/" + String(id) + "/bin";
+  if (!http.begin(net, url)) return false;
+  http.setTimeout(HTTP_TIMEOUT);
+  if (http.GET() != 200) { http.end(); return false; }
+  WiFiClient *st = http.getStreamPtr();
+  int off = 0; unsigned long t0 = millis();
+  while (off < PHOTO_BYTES && millis() - t0 < HTTP_TIMEOUT) {
+    int a = st->available();
+    if (a > 0) { off += st->readBytes(gPhotoBuf + off, min(a, PHOTO_BYTES - off)); t0 = millis(); }
+    else if (!http.connected() && st->available() == 0) break;
+    else delay(5);
+  }
+  http.end();
+  if (off < PHOTO_BYTES) return false;           // unvollständig -> nicht speichern
+  File f = LittleFS.open(photoPath(id), "w");
+  if (!f) return false;
+  size_t w = f.write(gPhotoBuf, PHOTO_BYTES);
+  f.close();
+  return w == PHOTO_BYTES;
+}
+
+// Neue Fotos laden (nur die, die lokal fehlen). Braucht WLAN; wird nach dem
+// Abruf aufgerufen, solange die Verbindung noch steht.
+void syncPhotos() {
+  if (!gFsOk || WiFi.status() != WL_CONNECTED) return;
+  int haveN = localPhotoCount();
+  int got = 0;
+  for (int i = 0; i < gCloudPhotoN && got < PHOTO_SYNC_PER_WAKE; i++) {
+    int id = gCloudPhotoIds[i];
+    if (LittleFS.exists(photoPath(id))) continue;  // schon da
+    if (haveN + got >= PHOTO_MAX) break;           // Speicher-Deckel
+    if (downloadPhoto(id)) got++;
+  }
+}
+
+// Ein Foto vollflächig zeichnen + weiße Fußzeile mit Zähler/Hinweis.
+static void drawPhotoScreen(int id, int idx, int n) {
+  bool ok = false;
+  File f = LittleFS.open(photoPath(id), "r");
+  if (f) { ok = (f.read(gPhotoBuf, PHOTO_BYTES) == PHOTO_BYTES); f.close(); }
+  const int W = display.width(), H = display.height();
+  int px = (W - PHOTO_W) / 2, py = (H - PHOTO_H) / 2;
+  if (px < 0) px = 0; if (py < 0) py = 0;
+  display.setFullWindow(); display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    if (ok) display.drawBitmap(px, py, gPhotoBuf, PHOTO_W, PHOTO_H, GxEPD_BLACK);
+    else    drawCenteredFit("Foto fehlt", H / 2, TITLE_FONTS, 3, W - 8);
+    display.fillRect(0, H - 18, W, 18, GxEPD_WHITE);      // weiße Fußzeile (überdeckt Bildrand)
+    display.setFont(FOOTER_FONT); display.setTextColor(GxEPD_BLACK);
+    String c = String(idx + 1) + "/" + String(n);
+    display.setCursor(4, H - 4); display.print(c);
+    const char *hint = "oben weiter";
+    display.setCursor(W - 6 - textW(hint), H - 4); display.print(hint);
+  } while (display.nextPage());
+}
+
+// Foto-Menüpunkt: oben KURZ = nächstes, unten = voriges, oben LANG = Menü.
+void runPhotos() {
+  int ids[PHOTO_MAX]; int n = listLocalPhotos(ids, PHOTO_MAX);
+  if (n == 0) { showInfo("Keine Fotos"); delay(1200); return; }
+  epdBegin();
+  int idx = 0;
+  drawPhotoScreen(ids[idx], idx, n);
+  waitButtonsReleased();
+  unsigned long lastActive = millis();
+  int bootPrev = HIGH, pwrPrev = HIGH; unsigned long bootDown = 0;
+  for (;;) {
+    int b = digitalRead(BTN_WAKE), p = digitalRead(BTN_POWER);
+    if (bootPrev == HIGH && b == LOW) bootDown = millis();
+    if (b == LOW && bootDown && millis() - bootDown >= LONGPRESS_MS) break;   // lang oben -> Menü
+    if (bootPrev == LOW && b == HIGH) {
+      unsigned long held = millis() - bootDown; bootDown = 0;
+      if (held < LONGPRESS_MS) { idx = (idx + 1) % n; drawPhotoScreen(ids[idx], idx, n); }
+      lastActive = millis();
+    }
+    if (pwrPrev == HIGH && p == LOW) { idx = (idx - 1 + n) % n; drawPhotoScreen(ids[idx], idx, n); lastActive = millis(); }
+    bootPrev = b; pwrPrev = p;
+    if (millis() - lastActive > IDLE_SLEEP_MS) break;
+    delay(15);
+  }
+  epdEnd();
+}
+
 // Hauptmenü: Titelbalken + Liste mit Markierung. Knöpfe: oben WEITER, unten OK.
 void renderMenu(int sel) {
   const int W = display.width();
   int unread = unreadCount();
-  String items[4] = {
+  String items[5] = {
     unread > 0 ? ("Nachrichten (" + String(unread) + " neu)") : String("Nachrichten"),
     "Aufgaben (" + String(tasksN) + ")",
     "Antwort",
+    "Fotos (" + String(localPhotoCount()) + ")",
     "WLAN einrichten"
   };
   display.setFullWindow(); display.firstPage();
@@ -1487,8 +1678,8 @@ void renderMenu(int sel) {
       display.fillCircle(ucx + 3, 4, 1, GxEPD_WHITE);
     }
     display.setFont(&FreeSansBold9pt7b);        // kleinere Listenschrift (damit "(2)" nicht abgeschnitten wird)
-    int y0 = 34, rowH = 32;
-    for (int i = 0; i < 4; i++) {
+    int y0 = 32, rowH = 31;                      // 5 Zeilen passen in 200 px (bis y=182)
+    for (int i = 0; i < 5; i++) {
       int ry = y0 + i * rowH;
       if (i == sel) { display.fillRect(4, ry, W - 26, 26, GxEPD_BLACK); display.setTextColor(GxEPD_WHITE); }
       else display.setTextColor(GxEPD_BLACK);
@@ -1502,7 +1693,7 @@ void renderMenu(int sel) {
 // zurück (danach schläft das Gerät automatisch).
 void runWifiSetup();   // weiter unten definiert (WLAN-Einrichtungsportal)
 void runMainMenu() {
-  const int N = 4;
+  const int N = 5;
   int sel = 0;
   epdBegin();
   renderMenu(sel);
@@ -1523,6 +1714,8 @@ void runMainMenu() {
       } else if (sel == 2) {
         epdBegin(); runReplyMenu(); epdEnd();
       } else if (sel == 3) {
+        runPhotos();                                  // Fotos durchblättern (zeichnet selbst)
+      } else if (sel == 4) {
         runWifiSetup();                               // WLAN-Portal (zeichnet selbst); bei Speichern Neustart
       }
       epdBegin(); renderMenu(sel);                    // zurück im Menü
@@ -1721,7 +1914,8 @@ bool consoleExec(String line, Print &out) {
     out.printf("Nachrichten: %d, Aufgaben: %d\n", archiveN, tasksN);
     out.printf("Config: poll=%dmin, Nacht %d-%d Uhr, vol=%d\n", cfgPollMin, cfgNightStart, cfgNightEnd, cfgVolume);
     out.printf("Backend: %s, Nachfass-Versuche: %d/%d\n", gBackendOk ? "erreicht" : "NICHT erreicht", retryCount, RETRY_MAX);
-    { int bp = batteryPercent(); if (bp >= 0) out.printf("Batterie: %d%%\n", bp); }
+    { int bp = batteryPercent();
+      if (bp >= 0) out.printf("Batterie: %d%% (%d mV%s)\n", bp, batteryMilliVolts(), isCharging() ? ", laedt" : ""); }
 #if HAS_AUDIO
     out.println("Onboard-Audio (ES8311) vorhanden: i2c scan zeigt 0x18");
 #endif
@@ -1988,6 +2182,7 @@ void setup() {
   Serial.begin(115200);
   if (!cfgLoaded) loadConfigNVS();     // Fern-Konfiguration (Poll/Nacht/Vol) aus NVS
   loadLastRead();                      // "gelesen"-Merker
+  gFsOk = LittleFS.begin(true);        // Fotospeicher mounten (true = bei Bedarf formatieren)
 
 #if HAS_POWER_LATCH
   latchPowerOn();
@@ -2075,6 +2270,9 @@ void setup() {
       if (i) delay(1500);                       // dem Link kurz Zeit geben
       gBackendOk = httpFetchState();
     }
+#if HAS_BACK_BUTTON
+    if (gBackendOk) syncPhotos();               // neue Fotos laden (solange WLAN steht; nur Zwei-Knopf-Board)
+#endif
     if (!gBackendOk) loadArchiveNVS();          // Backend nicht erreicht -> Cache
   } else {
     loadArchiveNVS();
@@ -2096,7 +2294,8 @@ void setup() {
     }
     // Ruhebild nach dem Abruf nur neu zeichnen, wenn sich der Inhalt geändert hat
     // (sonst zeigt das Sofort-Feedback von oben schon das richtige Bild -> kein Flackern).
-    int postSig = unreadCount() * 100 + tasksN + (isNightNow() ? 100000 : 0) + (gOnline ? 1000000 : 0);
+    int postSig = unreadCount() * 100 + tasksN + (isNightNow() ? 100000 : 0) + (gOnline ? 1000000 : 0)
+                + (isCharging() ? 2000000 : 0);
     runScreensaver(saverDrawn && postSig == saverSig);   // Ruhebild -> Menü -> ... -> Schlaf
     if (archiveN > 0) { lastShownHash = hashMsg(archive[0].text, archive[0].from); navSig = archive[0].ts; }
     lastTaskSig = taskSig();
