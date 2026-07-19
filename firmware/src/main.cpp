@@ -46,10 +46,13 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      16
+#define FW_VERSION      17
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
+#define CHARGE_POLL_MINUTES 3 // beim Laden häufiger aufwachen, damit der Ladescreen
+                              // nach dem Abstecken schnell wieder zum Ruhebild wird
+                              // (am USB kostet das Aufwachen praktisch keinen Strom)
 #define WIFI_TIMEOUT    10000 // ms pro WLAN-Versuch warten
 #define WIFI_TRIES      3     // Anzahl Verbindungsversuche, bevor aufgegeben wird
 #define WIFI_MAX        5     // so viele bekannte WLANs merkt sich das Gerät
@@ -202,6 +205,7 @@ RTC_DATA_ATTR uint32_t lastReadTs    = 0;    // ts der zuletzt gelesenen Nachric
 RTC_DATA_ATTR int      retryCount    = 0;    // wie oft in Folge schon kurz nachgefasst (0 = letzter Poll war ok)
 RTC_DATA_ATTR int      rtcLastBattMv = 0;    // Batteriespannung beim letzten Aufwachen (Lade-Trend)
 RTC_DATA_ATTR bool     rtcWasCharging= false;// zuletzt erkannter Ladezustand (Hysterese)
+RTC_DATA_ATTR bool     rtcShownCharging=false;// zeigt der aktuelle Bildschirm gerade das Lade-Bild?
 
 // Fern-Konfiguration (per Backend änderbar, in NVS gesichert, über Schlaf gemerkt)
 RTC_DATA_ATTR int  cfgPollMin    = POLL_MINUTES;
@@ -443,8 +447,14 @@ int batteryMilliVolts() { return gBattMv >= 0 ? gBattMv : readBattMv(); }
 // plus eine typische 1S-LiPo-Entladekurve fuer die Mitte.
 //   Kalibrieren: Terminal "status" zeigt die mV. Voll geladen ablesen und
 //   BATT_FULL_MV auf diesen Wert setzen; leer (Gerät schaltet ab) -> BATT_EMPTY_MV.
+// PRAGMATISCHE KALIBRIERUNG (2026-07-19, ohne Multimeter): Das Board las nach
+// LANGEM Laden nur ~3937 mV und blieb bei ~75 % - der ESP32-S3-ADC misst oben
+// deutlich zu niedrig (echt ~4,1-4,2 V). Anker daher auf den beobachteten Voll-
+// Messwert gesetzt (~3930 mV = 100 %), damit "voll" auch 100 % zeigt. Folge: die
+// oberen ~10 % realer Ladung liegen alle nahe der 3930-mV-Decke -> Anzeige bleibt
+// eine Weile bei 100 % und faellt erst, wenn die Zelle wirklich absinkt (gewollt).
 #ifndef BATT_FULL_MV
-#define BATT_FULL_MV  4150   // >= dieser Wert = 100 %
+#define BATT_FULL_MV  3930   // >= dieser Wert (roher ADC-mV) = 100 %
 #endif
 #ifndef BATT_EMPTY_MV
 #define BATT_EMPTY_MV 3300   // <= dieser Wert = 0 %
@@ -1104,6 +1114,10 @@ void goToSleep() {
     retryCount++;
   } else {
     retryCount = 0;                             // geschafft (oder genug nachgefasst) -> Normaltakt
+    // Beim Laden kürzer schlafen: so bemerkt das Gerät ein Abstecken rasch und
+    // ersetzt den (stromlos stehenbleibenden) Ladescreen zeitnah durchs Ruhebild.
+    if (isCharging() && sleepSec > (uint64_t)CHARGE_POLL_MINUTES * 60ULL)
+      sleepSec = (uint64_t)CHARGE_POLL_MINUTES * 60ULL;
   }
   esp_sleep_enable_timer_wakeup(sleepSec * 1000000ULL);
 
@@ -2328,10 +2342,14 @@ void setup() {
     int postSig = unreadCount() * 100 + tasksN + (isNightNow() ? 100000 : 0) + (gOnline ? 1000000 : 0)
                 + (isCharging() ? 2000000 : 0);
     runScreensaver(saverDrawn && postSig == saverSig);   // Ruhebild -> Menü -> ... -> Schlaf
+    rtcShownCharging = isCharging();                      // merken, was jetzt auf dem Schirm steht
     if (archiveN > 0) { lastShownHash = hashMsg(archive[0].text, archive[0].from); navSig = archive[0].ts; }
     lastTaskSig = taskSig();
   } else {
-    // Timer-Aufwachen: nur wenn etwas Neues da ist -> Ruhebild zeigen + Ton.
+    // Timer-Aufwachen: neuer Inhalt -> Ruhebild + Ton; ODER der Ladezustand hat sich
+    // geändert (z. B. abgesteckt) -> Bild neu zeichnen, damit KEIN alter Ladescreen
+    // stromlos stehenbleibt (ohne Ton, das ist keine "neue Post").
+    bool chargeChanged = (isCharging() != rtcShownCharging);
     if (newTasks || newMsg) {
       epdBegin(); renderScreensaver(); epdEnd();
       notifyBeep(newTasks ? 3 : 2);
@@ -2340,7 +2358,10 @@ void setup() {
 #endif
       if (archiveN > 0) lastShownHash = hashMsg(archive[0].text, archive[0].from);
       lastTaskSig = taskSig();
+    } else if (chargeChanged) {
+      epdBegin(); renderScreensaver(); epdEnd();
     }
+    rtcShownCharging = isCharging();
   }
 #else
   // ---- Einknopf-Fallback (CrowPanel): altes Verhalten ----
