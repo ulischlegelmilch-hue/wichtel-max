@@ -46,13 +46,10 @@
 // ---- Firmware-Version (für OTA-Fernupdate) -------------------------------
 // Bei jeder neuen Firmware, die du übers Backend verteilen willst, HOCHZÄHLEN.
 // Das Gerät lädt sich nur eine .bin, deren Version größer als diese ist.
-#define FW_VERSION      17
+#define FW_VERSION      18
 
 // ---- Verhalten -----------------------------------------------------------
 #define POLL_MINUTES    30    // wie oft aufwachen & nach neuer Nachricht sehen
-#define CHARGE_POLL_MINUTES 3 // beim Laden häufiger aufwachen, damit der Ladescreen
-                              // nach dem Abstecken schnell wieder zum Ruhebild wird
-                              // (am USB kostet das Aufwachen praktisch keinen Strom)
 #define WIFI_TIMEOUT    10000 // ms pro WLAN-Versuch warten
 #define WIFI_TRIES      3     // Anzahl Verbindungsversuche, bevor aufgegeben wird
 #define WIFI_MAX        5     // so viele bekannte WLANs merkt sich das Gerät
@@ -450,11 +447,15 @@ int batteryMilliVolts() { return gBattMv >= 0 ? gBattMv : readBattMv(); }
 // PRAGMATISCHE KALIBRIERUNG (2026-07-19, ohne Multimeter): Das Board las nach
 // LANGEM Laden nur ~3937 mV und blieb bei ~75 % - der ESP32-S3-ADC misst oben
 // deutlich zu niedrig (echt ~4,1-4,2 V). Anker daher auf den beobachteten Voll-
-// Messwert gesetzt (~3930 mV = 100 %), damit "voll" auch 100 % zeigt. Folge: die
-// oberen ~10 % realer Ladung liegen alle nahe der 3930-mV-Decke -> Anzeige bleibt
-// eine Weile bei 100 % und faellt erst, wenn die Zelle wirklich absinkt (gewollt).
+// Messwert gesetzt, damit "voll" auch 100 % zeigt. Folge: die oberen ~10 % realer
+// Ladung liegen alle nahe der Voll-Decke -> Anzeige bleibt eine Weile bei 100 %
+// und faellt erst, wenn die Zelle wirklich absinkt (gewollt).
+// NACHKALIBRIERT (FW 18, 2026-07-19): Voll geladenes Gerät meldete real nur
+// 3893 mV und blieb bei 94 % (Anker 3930 war noch zu hoch). Anker daher auf
+// 3880 mV (knapp unter dem Voll-Messwert, kleiner Puffer gegen ADC-Rauschen) ->
+// voll = 100 %.
 #ifndef BATT_FULL_MV
-#define BATT_FULL_MV  3930   // >= dieser Wert (roher ADC-mV) = 100 %
+#define BATT_FULL_MV  3880   // >= dieser Wert (roher ADC-mV) = 100 %
 #endif
 #ifndef BATT_EMPTY_MV
 #define BATT_EMPTY_MV 3300   // <= dieser Wert = 0 %
@@ -1114,10 +1115,6 @@ void goToSleep() {
     retryCount++;
   } else {
     retryCount = 0;                             // geschafft (oder genug nachgefasst) -> Normaltakt
-    // Beim Laden kürzer schlafen: so bemerkt das Gerät ein Abstecken rasch und
-    // ersetzt den (stromlos stehenbleibenden) Ladescreen zeitnah durchs Ruhebild.
-    if (isCharging() && sleepSec > (uint64_t)CHARGE_POLL_MINUTES * 60ULL)
-      sleepSec = (uint64_t)CHARGE_POLL_MINUTES * 60ULL;
   }
   esp_sleep_enable_timer_wakeup(sleepSec * 1000000ULL);
 
