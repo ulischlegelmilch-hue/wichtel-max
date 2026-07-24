@@ -312,6 +312,15 @@ app.use((req, res, next) => {
 });
 app.use(express.static(join(__dirname, "..", "webapp")));
 
+// ---- Keep-alive / Health-Check -------------------------------------------
+// Extra-leichter Endpunkt NUR zum Wachhalten der Render-Free-Instanz durch
+// einen externen Cron/Uptime-Monitor (z.B. cron-job.org). Gibt sofort ein
+// winziges "ok" zurück – kein State, kein Verlauf, keine Fotos –, damit der
+// Ping schnell und zuverlässig 200 liefert und der Monitor nicht wegen
+// Timeouts (Cold Start) Fehlversuche zählt. Antwortet auch auf HEAD/GET.
+app.get("/healthz", (_req, res) => res.type("text/plain").send("ok"));
+app.head("/healthz", (_req, res) => res.sendStatus(200));
+
 app.get("/api/state", (_req, res) => {
   res.json({ last: state.last, history: state.history, tasks: annotateTasks(), stars: state.stars,
              replies: state.replies, deviceOnline: isOnline(),
